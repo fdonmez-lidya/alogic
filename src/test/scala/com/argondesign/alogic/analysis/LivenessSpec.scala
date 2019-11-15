@@ -34,9 +34,9 @@ class LivenessSpec extends FreeSpec with AlogicTest {
 
   val fold = new FoldExpr(foldRefs = true)
 
-  val aSymbol = cc.newTermSymbol("a", Loc.synthetic, TypeUInt(Expr(4) regularize Loc.synthetic))
-  val bSymbol = cc.newTermSymbol("b", Loc.synthetic, TypeUInt(Expr(8) regularize Loc.synthetic))
-  val cSymbol = cc.newTermSymbol("c", Loc.synthetic, TypeUInt(Expr(256) regularize Loc.synthetic))
+  val aSymbol = cc.newSymbol("a", Loc.synthetic) tap { _.kind = TypeUInt(4) }
+  val bSymbol = cc.newSymbol("b", Loc.synthetic) tap { _.kind = TypeUInt(8) }
+  val cSymbol = cc.newSymbol("c", Loc.synthetic) tap { _.kind = TypeUInt(256) }
 
   val aRef = ExprSym(aSymbol) regularize Loc.synthetic
   val bRef = ExprSym(bSymbol) regularize Loc.synthetic

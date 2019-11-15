@@ -27,9 +27,8 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees.Expr.InstancePortRef
 import com.argondesign.alogic.ast.Trees._
-import com.argondesign.alogic.core.Symbols._
 import com.argondesign.alogic.core.CompilerContext
-import com.argondesign.alogic.core.TreeInTypeTransformer
+import com.argondesign.alogic.core.Symbols._
 import com.argondesign.alogic.core.Types._
 import com.argondesign.alogic.typer.TypeAssigner
 import com.argondesign.alogic.util.PartialMatch
@@ -43,7 +42,7 @@ final class LowerInterconnect(implicit cc: CompilerContext)
     with PartialMatch {
 
   // Map from (instance symbol, selector) to the new interconnect symbol
-  private[this] val newSymbols = mutable.LinkedHashMap[(TermSymbol, String), TermSymbol]()
+  private[this] val newSymbols = mutable.LinkedHashMap[(Symbol, String), Symbol]()
 
   // List of new Connect instances to emit
   private[this] val newConnects = new ListBuffer[EntConnect]()
@@ -60,17 +59,11 @@ final class LowerInterconnect(implicit cc: CompilerContext)
     entitySymbol.attr.interconnectClearOnStall.getOrElse(Nil).toSet
   }
 
-  // We need to fold const references in interconnect symbol types,
-  // as these consts are defined in the entity being instantiated,
-  // and not the entity being processed (which does the instantiation)
-  lazy val typeFoldExpr = new FoldExpr(foldRefs = true)
-  object TypeFoldExpr extends TreeInTypeTransformer(typeFoldExpr)
-
   // Return the interconnect symbol for 'iSymbol.sel', if any. If the
   // interconnect symbol does not exist and alloc is true, allocate
   // it and connect it up
-  def handlePortSelect(select: ExprSelect, alloc: Boolean): Option[TermSymbol] = select match {
-    case ExprSelect(ExprSym(iSymbol: TermSymbol), sel, _) =>
+  def handlePortSelect(select: ExprSelect, alloc: Boolean): Option[Symbol] = select match {
+    case ExprSelect(ExprSym(iSymbol), sel, _) =>
       val key = (iSymbol, sel)
       if (!alloc) {
         newSymbols.get(key)
@@ -78,9 +71,9 @@ final class LowerInterconnect(implicit cc: CompilerContext)
         lazy val newSymbol = {
           // Allocate interconnect symbol
           val name = iSymbol.name + cc.sep + sel
-          val pKind = iSymbol.kind.asInstanceOf[TypeInstance](sel).get
-          val nKind = pKind.underlying rewrite TypeFoldExpr
-          val symbol = cc.newTermSymbol(name, iSymbol.loc, nKind)
+          val pKind = iSymbol.kind.asEntity(sel).get.kind
+          val nKind = pKind.underlying
+          val symbol = cc.newSymbol(name, iSymbol.loc) tap { _.kind = nKind }
           symbol.attr.interconnect.set((iSymbol, sel))
 
           // If this is an interconnect symbol that is in the entity
@@ -177,12 +170,12 @@ final class LowerInterconnect(implicit cc: CompilerContext)
       // Add new symbols and connections, ensure single sink for 'instance.port'
       //////////////////////////////////////////////////////////////////////////
 
-      case entity: Entity => {
+      case desc: DescEntity => {
         val newBody = List from {
           {
             // Add declarations for the newly defined symbols
             for ((_, symbol) <- newSymbols) yield {
-              EntDecl(Decl(symbol, None)) regularize symbol.loc
+              EntDecl(symbol.decl) regularize symbol.loc
             }
           } concat {
             newConnects.iterator
@@ -192,7 +185,7 @@ final class LowerInterconnect(implicit cc: CompilerContext)
 
             // Collect the sinks of all 'instance.port'
             val sinks: Map[ExprSelect, List[Expr]] = {
-              val pairs = entity.connects collect {
+              val pairs = desc.connects collect {
                 case EntConnect(select @ InstancePortRef(_, _), List(sink)) => {
                   select -> sink
                 }
@@ -216,7 +209,7 @@ final class LowerInterconnect(implicit cc: CompilerContext)
             // Update all connect instances that reference on the left hand side
             // a port with multiple sinks, and the right hand side is not the
             // interconnect symbol
-            entity.body map {
+            desc.body map {
               case conn @ EntConnect(expr: ExprSelect, List(rhs)) =>
                 nMap get expr map { nSymbol =>
                   rhs match {
@@ -238,17 +231,17 @@ final class LowerInterconnect(implicit cc: CompilerContext)
         // moment, we don't need this in entities without a state system, if we
         // do, we can do it by building a complete map based on the connections
         // we ended up with.
-        if (entity.combProcesses.nonEmpty) {
+        if (desc.combProcesses.nonEmpty) {
           for {
             ((iSymbol, sel), symbol) <- newSymbols
-            pSymbol = iSymbol.kind.asInstanceOf[TypeInstance].portSymbol(sel).get
+            pSymbol = iSymbol.kind.asEntity(sel).get
             gSymbol <- pSymbol.attr.dontCareUnless.get
           } {
             symbol.attr.dontCareUnless set newSymbols((iSymbol, gSymbol.name))
           }
         }
 
-        TypeAssigner { entity.copy(body = newBody) withLoc tree.loc }
+        TypeAssigner { desc.copy(body = newBody) withLoc desc.loc }
       } tap { _ =>
         newConnects.clear()
       }
@@ -291,8 +284,7 @@ final class LowerInterconnect(implicit cc: CompilerContext)
 
     def check(tree: Tree) = {
       tree visit {
-        case node @ ExprSelect(ExprSym(symbol: TermSymbol), _, _)
-            if symbol.kind.isInstanceOf[TypeInstance] => {
+        case node @ ExprSelect(ExprSym(symbol), _, _) if symbol.kind.isEntity => {
           cc.ice(node, "Direct port access remains")
         }
       }

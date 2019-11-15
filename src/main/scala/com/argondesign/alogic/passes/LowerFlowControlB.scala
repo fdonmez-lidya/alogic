@@ -21,7 +21,6 @@ import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Symbols._
-import com.argondesign.alogic.core.Types._
 
 final class LowerFlowControlB(implicit cc: CompilerContext) extends TreeTransformer {
 
@@ -34,36 +33,33 @@ final class LowerFlowControlB(implicit cc: CompilerContext) extends TreeTransfor
   }
 
   // Given a symbol, return the corresponding payload symbol, if any
-  private[this] def payloadSymbol(symbol: TermSymbol): Option[TermSymbol] = {
-    symbol.attr.fcv.get.map {
-      case (pSymbol, _) => pSymbol
-    } orElse symbol.attr.fcr.get.map {
-      case (pSymbol, _, _) => pSymbol
-    } orElse symbol.attr.fca.get.map {
-      case (pSymbol, _, _) => pSymbol
-    } flatMap {
-      case symbol: TermSymbol => Some(symbol)
-      case ErrorSymbol        => None
+  private[this] def payloadSymbol(symbol: Symbol): Option[Symbol] = {
+    symbol.attr.fcv.get.flatMap {
+      _._1
+    } orElse symbol.attr.fcr.get.flatMap {
+      _._1
+    } orElse symbol.attr.fca.get.flatMap {
+      _._1
     }
   }
 
   // Given a symbol, return the corresponding valid symbol, if any
-  private[this] def validSymbol(symbol: TermSymbol): Option[TermSymbol] = {
+  private[this] def validSymbol(symbol: Symbol): Option[Symbol] = {
     symbol.attr.fcv.get.map {
-      case (_, vSymbol) => vSymbol
+      _._2
     } orElse symbol.attr.fcr.get.map {
-      case (_, vSymbol, _) => vSymbol
+      _._2
     } orElse symbol.attr.fca.get.map {
-      case (_, vSymbol, _) => vSymbol
+      _._2
     }
   }
 
   // Given a symbol, return the corresponding ready/accept symbol, if any
-  private[this] def backSymbol(symbol: TermSymbol): Option[TermSymbol] = {
+  private[this] def backSymbol(symbol: Symbol): Option[Symbol] = {
     symbol.attr.fcr.get.map {
-      case (_, _, rSymbol) => rSymbol
+      _._3
     } orElse symbol.attr.fca.get.map {
-      case (_, _, aSymbol) => aSymbol
+      _._3
     }
   }
 
@@ -71,16 +67,16 @@ final class LowerFlowControlB(implicit cc: CompilerContext) extends TreeTransfor
   // that refers to the constituent symbol extracted by partSymbol
   private[this] def partExpr(
       expr: Expr,
-      partSymbol: TermSymbol => Option[TermSymbol]
+      partSymbol: Symbol => Option[Symbol]
   ): Option[Expr] = expr match {
-    case ExprSym(pSymbol: TermSymbol) => {
+    case ExprSym(pSymbol) => {
       partSymbol(pSymbol) map { symbol =>
         ExprSym(symbol)
       }
     }
-    case ExprSelect(ExprSym(iSymbol), sel, _) if iSymbol.kind.isInstance => {
-      val kind = iSymbol.kind.asInstanceOf[TypeInstance]
-      val pSymbolOpt = kind.portSymbols collectFirst {
+    case ExprSelect(ExprSym(iSymbol), sel, _) if iSymbol.kind.isEntity => {
+      val kind = iSymbol.kind.asEntity
+      val pSymbolOpt = kind.publicSymbols collectFirst {
         case symbol if symbol.name == sel && symbol.attr.expandedPort.isSet => symbol
       }
       pSymbolOpt flatMap partSymbol map { symbol =>

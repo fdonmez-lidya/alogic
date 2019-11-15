@@ -31,55 +31,47 @@ final class RemoveRedundantBlocks(implicit cc: CompilerContext) extends TreeTran
   }
 
   override def transform(tree: Tree): Tree = tree match {
-    case EntFunction(ref, body) => {
+    case desc: DescFunc =>
       TypeAssigner {
-        EntFunction(ref, flatten(body)) withLoc tree.loc
+        desc.copy(body = flatten(desc.body)) withLoc desc.loc
       }
-    }
 
-    case EntState(expr, body) => {
+    case desc: DescState =>
       TypeAssigner {
-        EntState(expr, flatten(body)) withLoc tree.loc
+        desc.copy(body = flatten(desc.body)) withLoc tree.loc
       }
-    }
 
     case StmtBlock(List(stmt)) => stmt
 
-    case StmtBlock(body) => {
+    case StmtBlock(body) =>
       TypeAssigner {
         StmtBlock(flatten(body)) withLoc tree.loc
       }
-    }
 
-    case StmtLoop(body) => {
+    case StmtLoop(body) =>
       TypeAssigner {
         StmtLoop(flatten(body)) withLoc tree.loc
       }
-    }
 
-    case StmtIf(cond, thenStmts, elseStmts) => {
+    case StmtIf(cond, thenStmts, elseStmts) =>
       TypeAssigner {
         StmtIf(cond, flatten(thenStmts), flatten(elseStmts)) withLoc tree.loc
       }
-    }
 
-    case CaseRegular(cond, stmts) => {
+    case CaseRegular(cond, stmts) =>
       TypeAssigner {
         CaseRegular(cond, flatten(stmts)) withLoc tree.loc
       }
-    }
 
-    case CaseDefault(stmts) => {
+    case CaseDefault(stmts) =>
       TypeAssigner {
         CaseDefault(flatten(stmts)) withLoc tree.loc
       }
-    }
 
-    case EntCombProcess(stmts) => {
+    case EntCombProcess(stmts) =>
       TypeAssigner {
         EntCombProcess(flatten(stmts)) withLoc tree.loc
       }
-    }
 
     case _ => tree
   }

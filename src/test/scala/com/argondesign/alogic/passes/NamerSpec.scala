@@ -18,15 +18,13 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.AlogicTest
 import com.argondesign.alogic.SourceTextConverters._
 import com.argondesign.alogic.ast.Trees._
-import com.argondesign.alogic.core.FlowControlTypes._
-import com.argondesign.alogic.core.StorageTypes._
-import com.argondesign.alogic.core.Symbols.TermSymbol
-import com.argondesign.alogic.core.Symbols.TypeSymbol
-import com.argondesign.alogic.core.Types.TypeArray
-import com.argondesign.alogic.core.Types._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Error
+import com.argondesign.alogic.core.Symbols.Symbol
+import com.argondesign.alogic.core.Types.TypeNum
+import com.argondesign.alogic.core.Types.TypeUInt
 import com.argondesign.alogic.core.Warning
+import com.argondesign.alogic.core.enums.EntityVariant
 import org.scalatest.FreeSpec
 
 final class NamerSpec extends FreeSpec with AlogicTest {
@@ -37,9 +35,9 @@ final class NamerSpec extends FreeSpec with AlogicTest {
 
   def xform(tree: Tree): Tree = {
     tree match {
-      case Root(_, entity) => cc.addGlobalEntity(entity)
-      case entity: Entity  => cc.addGlobalEntity(entity)
-      case _               =>
+      case Root(decls) => cc.addGlobalDecls(decls.collect { case decl: Decl => decl })
+      case decl: Decl => cc.addGlobalDecl(decl)
+      case _ =>
     }
     tree rewrite namer
   }
@@ -53,24 +51,25 @@ final class NamerSpec extends FreeSpec with AlogicTest {
 
       cc.messages should have length 1
       cc.messages(0) should beThe[Error](
-        "Redefinition of name 'foo' with previous definition at",
+        "Redefinition of 'foo' with previous definition at",
         ".*:2"
       )
       cc.messages(0).loc.line shouldBe 3
     }
 
     "issue error for redefinition of type" in {
-      val root = """|typedef u1 foo;
-                    |typedef u2 foo;
-                    |fsm a {}""".stripMargin.asTree[Root]
-      cc.addGlobalEntity(root.entity)
-      root rewrite namer
+      xform {
+        """|fsm a {
+           |  typedef u1 foo;
+           |  typedef u2 foo;
+           |}""".stripMargin.asTree[Decl]
+      }
 
       cc.messages.loneElement should beThe[Error](
-        "Redefinition of type 'foo' with previous definition at",
-        ".*:1"
+        "Redefinition of 'foo' with previous definition at",
+        ".*:2"
       )
-      cc.messages(0).loc.line shouldBe 2
+      cc.messages(0).loc.line shouldBe 3
     }
 
     "issue warning for variable hiding" in {
@@ -81,26 +80,19 @@ final class NamerSpec extends FreeSpec with AlogicTest {
 
       cc.messages should have length 1
       cc.messages(0) should beThe[Warning](
-        "Definition of name 'foo' hides previous definition at",
+        "Definition of 'foo' hides previous definition at",
         ".*:2"
       )
       cc.messages(0).loc.line shouldBe 3
     }
 
-    "issue warning for variable hiding even for later symbol" in {
-      val entity = """|fsm a {
-                      |  void main() { bool foo; }
-                      |  void foo() {}
-                      |}""".stripMargin.asTree[Entity]
-      cc.addGlobalEntity(entity)
-      entity rewrite namer
+    "not issue warning for variable hiding for later symbol" in {
+      """|{
+         |  { u2 foo; }
+         |  u1 foo;
+         |}""".stripMargin.asTree[Stmt] rewrite namer
 
-      cc.messages should have length 1
-      cc.messages(0) should beThe[Warning](
-        "Definition of name 'foo' hides previous definition at",
-        ".*:3"
-      )
-      cc.messages(0).loc.line shouldBe 2
+      cc.messages shouldBe empty
     }
 
     "cope with using the same name in non-intersecting scopes" in {
@@ -116,8 +108,30 @@ final class NamerSpec extends FreeSpec with AlogicTest {
       val root = """|typedef bool a;
                     |typedef a b;
                     |fsm c {}""".stripMargin.asTree[Root]
-      cc.addGlobalEntity(root.entity)
-      root rewrite namer
+      xform(root)
+
+      cc.messages shouldBe empty
+    }
+
+    "issue error for use before definition for symbols defined in statements" in {
+      """|{
+         |  u1 foo = bar;
+         |  u1 bar;
+         |}""".stripMargin.asTree[Stmt] rewrite namer
+
+      cc.messages.loneElement should beThe[Error]("'bar' used before it is defined")
+      cc.messages.loneElement.loc.line shouldBe 2
+    }
+
+    "not issue error for use before definition for symbols not defined in statements" in {
+      val tree = """|fsm a {
+                    |  void main() {
+                    |    foo();
+                    |  }
+                    |  void foo() {}
+                    |}""".stripMargin.asTree[Decl]
+
+      xform(tree)
 
       cc.messages shouldBe empty
     }
@@ -148,8 +162,8 @@ final class NamerSpec extends FreeSpec with AlogicTest {
          |}""".stripMargin.asTree[Stmt] rewrite namer
 
       cc.messages should have length 1
-      cc.messages(0) should beThe[Error](
-        "Redefinition of name 'b' with previous definition at",
+      cc.messages(0) should beThe[Warning](
+        "Definition of 'b' hides previous definition at",
         ".*:1"
       )
       cc.messages(0).loc.line shouldBe 2
@@ -161,43 +175,11 @@ final class NamerSpec extends FreeSpec with AlogicTest {
          |} while (1);""".stripMargin.asTree[Stmt] rewrite namer
 
       cc.messages should have length 1
-      cc.messages(0) should beThe[Error](
-        "Redefinition of name 'a' with previous definition at",
+      cc.messages(0) should beThe[Warning](
+        "Definition of 'a' hides previous definition at",
         ".*:1"
       )
       cc.messages(0).loc.line shouldBe 2
-    }
-
-    "construct struct types" in {
-      val root = """|typedef bool e_t;
-                    |struct a {
-                    |  bool b;
-                    |  i8 c;
-                    |  e_t  d;
-                    |}
-                    |fsm b {}""".stripMargin.asTree[Root]
-      cc.addGlobalEntity(root.entity)
-
-      val tree = root rewrite namer
-
-      inside(tree) {
-        case Root(List(
-                    Defn(eSym),
-                    Defn(aSym)
-                  ),
-                  _) =>
-          aSym.loc.line shouldBe 2
-          aSym.name shouldBe "a"
-          aSym.isTypeSymbol shouldBe true
-
-          aSym.kind shouldBe TypeStruct(
-            "a",
-            List("b", "c", "d"),
-            List(TypeUInt(Expr(1)), TypeSInt(Expr(8)), TypeRef(Sym(eSym, Nil)))
-          )
-      }
-
-      cc.messages shouldBe empty
     }
 
     "resolve term names to their correct definitions" in {
@@ -211,21 +193,21 @@ final class NamerSpec extends FreeSpec with AlogicTest {
                     |}""".stripMargin.asTree[Stmt] rewrite namer
 
       inside(tree) {
-        case StmtBlock(List(StmtDecl(Decl(outer1, _)), block, StmtAssign(ExprSym(outer2), _))) =>
+        case StmtBlock(
+            List(StmtDecl(Decl(Sym(outer1, _), _)), block, StmtAssign(ExprSym(outer2), _))) =>
           outer1.loc.line shouldBe 2
           outer1 should be theSameInstanceAs outer2
-          outer1.isTermSymbol shouldBe true
           inside(block) {
-            case StmtBlock(List(StmtDecl(Decl(inner1, _)), StmtAssign(ExprSym(inner2), _))) =>
+            case StmtBlock(
+                List(StmtDecl(Decl(Sym(inner1, _), _)), StmtAssign(ExprSym(inner2), _))) =>
               inner1.loc.line shouldBe 4
               inner1 should be theSameInstanceAs inner2
               inner1 shouldNot be theSameInstanceAs outer1
-              inner1.isTermSymbol shouldBe true
           }
       }
 
       cc.messages.loneElement should beThe[Warning](
-        "Definition of name 'a' hides previous definition at",
+        "Definition of 'a' hides previous definition at",
         ".*:2"
       )
     }
@@ -237,70 +219,7 @@ final class NamerSpec extends FreeSpec with AlogicTest {
       cc.messages shouldBe empty
     }
 
-    "resolve type names to their correct definitions - typedef" in {
-      val root = """|typedef bool foo_t;
-                    |
-                    |fsm a {
-                    |  fence {
-                    |    { bool foo_t = 0; }
-                    |    foo_t b;
-                    |  }
-                    |}""".stripMargin.asTree[Root]
-
-      cc.addGlobalEntity(root.entity)
-
-      val tree = root rewrite namer
-
-      inside(tree) {
-        case Root(List(typedef), entity) =>
-          inside(typedef) {
-            case Defn(defSym) =>
-              defSym.loc.line shouldBe 1
-              defSym.kind shouldBe TypeUInt(Expr(1))
-              inside(entity) {
-                case Entity(_, List(EntCombProcess(List(StmtBlock(List(_, stmt)))))) =>
-                  inside(stmt) {
-                    case StmtDecl(Decl(symbol, _)) =>
-                      symbol.kind shouldBe TypeRef(Sym(defSym, Nil))
-                  }
-              }
-          }
-      }
-    }
-
-    "resolve type names to their correct definitions - struct" in {
-      val root = """|struct bar_t {
-                    |  bool a;
-                    |}
-                    |
-                    |fsm a {
-                    |  fence {
-                    |    { bool bar_t; }
-                    |    bar_t b;
-                    |  }
-                    |}""".stripMargin.asTree[Root]
-
-      cc.addGlobalEntity(root.entity)
-
-      val tree = root rewrite namer
-
-      inside(tree) {
-        case Root(List(typedef), entity) =>
-          inside(typedef) {
-            case Defn(defSym) =>
-              defSym.loc.line shouldBe 1
-              inside(entity) {
-                case Entity(_, List(EntCombProcess(List(StmtBlock(List(_, stmt)))))) =>
-                  inside(stmt) {
-                    case StmtDecl(Decl(symbol, _)) =>
-                      symbol.kind shouldBe TypeRef(Sym(defSym, Nil))
-                  }
-              }
-          }
-      }
-    }
-
-    "resolve type names to their correct definitions - dict a" in {
+    "resolve term names to their correct definitions - dict a" in {
       val root = """|network a {
                     |  gen for (uint N < 10) {
                     |    in bool i#[N];
@@ -309,33 +228,32 @@ final class NamerSpec extends FreeSpec with AlogicTest {
                     |  }
                     |}""".stripMargin.asTree[Root]
 
-      cc.addGlobalEntity(root.entity)
-
-      val tree = root rewrite namer
-
-      inside(tree) {
-        case Root(Nil, entity) =>
-          inside(entity) {
-            case Entity(_, List(EntGen(GenRange(Decl(nSym, _), _, _, body)))) =>
+      inside(xform(root)) {
+        case Root(List(RizDecl(Decl(_, DescEntity(EntityVariant.Net, ents))))) =>
+          inside(ents) {
+            case List(EntGen(GenRange(Decl(Sym(nSym, _), _), _, _, body)), _, _) =>
               inside(body) {
-                case GenDecl(DeclRef(Sym(dISym, ExprSym(nASym) :: Nil), _, _)) ::
-                      GenDecl(DeclRef(Sym(dOSym, ExprSym(nBSym) :: Nil), _, _)) ::
+                case Decl(Sym(dISym, ExprSym(nASym) :: Nil), _) ::
+                      Decl(Sym(dOSym, ExprSym(nBSym) :: Nil), _) ::
                       EntConnect(
                       ExprRef(Sym(cISym, ExprSym(nCSym) :: Nil)),
                       ExprRef(Sym(cOSym, ExprSym(nDSym) :: Nil)) :: Nil
                     ) :: Nil =>
-                  dISym shouldBe theSameInstanceAs(cISym)
-                  dOSym shouldBe theSameInstanceAs(cOSym)
-                  nSym shouldBe theSameInstanceAs(nASym)
-                  nSym shouldBe theSameInstanceAs(nBSym)
-                  nSym shouldBe theSameInstanceAs(nCSym)
-                  nSym shouldBe theSameInstanceAs(nDSym)
+                  dISym should be theSameInstanceAs cISym
+                  dOSym should be theSameInstanceAs cOSym
+                  nSym should be theSameInstanceAs nASym
+                  nSym should be theSameInstanceAs nBSym
+                  nSym should be theSameInstanceAs nCSym
+                  nSym should be theSameInstanceAs nDSym
               }
           }
       }
+
+      cc.emitMessages()
+      cc.messages shouldBe empty
     }
 
-    "resolve type names to their correct definitions - dict b" in {
+    "resolve term names to their correct definitions - dict b" in {
       val root = """|network a {
                     |  gen for (uint N < 2) {
                     |    in bool i#[N];
@@ -345,17 +263,13 @@ final class NamerSpec extends FreeSpec with AlogicTest {
                     |  i#[1] -> o#[1];
                     |}""".stripMargin.asTree[Root]
 
-      cc.addGlobalEntity(root.entity)
-
-      val tree = root rewrite namer
-
-      inside(tree) {
-        case Root(Nil, Entity(_, List(EntGen(gen), conn0, conn1))) =>
-          inside(gen) {
-            case GenRange(_, _, _, body) =>
+      inside(xform(root)) {
+        case Root(List(RizDecl(Decl(_, DescEntity(EntityVariant.Net, ents))))) =>
+          inside(ents) {
+            case List(EntGen(GenRange(_, _, _, body)), conn0, conn1, _, _) =>
               inside(body) {
-                case GenDecl(DeclRef(Sym(iSym, _), _, _)) ::
-                      GenDecl(DeclRef(Sym(oSym, _), _, _)) :: Nil =>
+                case Decl(Sym(iSym, _), _) ::
+                      Decl(Sym(oSym, _), _) :: Nil =>
                   inside(conn0) {
                     case EntConnect(
                         ExprRef(Sym(lSym, Expr(0) :: Nil)),
@@ -373,31 +287,92 @@ final class NamerSpec extends FreeSpec with AlogicTest {
                       oSym shouldBe theSameInstanceAs(rSym.kind.asChoice.symbols.head)
                   }
               }
-
           }
       }
 
       cc.messages shouldBe empty
     }
 
+    "resolve type names to their correct definitions - typedef" in {
+      val root = """|typedef bool foo_t;
+                    |
+                    |fsm a {
+                    |  fence {
+                    |    { bool foo_t = 0; }
+                    |    foo_t b;
+                    |  }
+                    |}""".stripMargin.asTree[Root]
+
+      inside(xform(root)) {
+        case Root(List(RizDecl(defn), RizDecl(entity))) =>
+          inside(defn) {
+            case Decl(Sym(defSym, _), _: DescType) =>
+              defSym.loc.line shouldBe 1
+              inside(entity) {
+                case Decl(_, DescEntity(EntityVariant.Fsm, List(EntCombProcess(List(_, stmt))))) =>
+                  inside(stmt) {
+                    case StmtDecl(Decl(Sym(symbol, _), DescVar(ExprSym(`defSym`), _))) =>
+                      symbol.loc.line shouldBe 6
+                  }
+              }
+          }
+      }
+
+      cc.messages.loneElement should beThe[Warning](
+        "Definition of 'foo_t' hides previous definition at",
+        ".*:1"
+      )
+      cc.messages.loneElement.loc.line shouldBe 5
+    }
+
+    "resolve type names to their correct definitions - struct" in {
+      val root = """|struct bar_t {
+                    |  bool a;
+                    |}
+                    |
+                    |fsm a {
+                    |  fence {
+                    |    { bool bar_t; }
+                    |    bar_t b;
+                    |  }
+                    |}""".stripMargin.asTree[Root]
+
+      inside(xform(root)) {
+        case Root(List(RizDecl(record), RizDecl(entity))) =>
+          inside(record) {
+            case Decl(Sym(cSymbol, Nil), _: DescRecord) =>
+              cSymbol.loc.line shouldBe 1
+              inside(entity) {
+                case Decl(_, DescEntity(EntityVariant.Fsm, List(EntCombProcess(List(_, stmt))))) =>
+                  inside(stmt) {
+                    case StmtDecl(Decl(Sym(symbol, _), DescVar(ExprSym(`cSymbol`), _))) =>
+                      symbol.loc.line shouldBe 8
+                  }
+              }
+          }
+      }
+
+      cc.messages.loneElement should beThe[Warning](
+        "Definition of 'bar_t' hides previous definition at",
+        ".*:1"
+      )
+      cc.messages.loneElement.loc.line shouldBe 7
+    }
+
     "resolve function references to later definitions" in {
       val entity = """|fsm a {
                       |  void main () { foo(); }
                       |  void foo () {}
-                      |}""".stripMargin.asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
+                      |}""".stripMargin.asTree[Decl]
 
-      inside(tree) {
-        case entity: Entity =>
-          inside(entity.functions) {
-            case List(main, foo) =>
-              inside(main) {
-                case EntFunction(_, List(StmtExpr(ExprCall(ExprSym(fooInMain), _)))) =>
-                  inside(foo) {
-                    case EntFunction(Sym(fooInDef, Nil), _) =>
-                      fooInMain should be theSameInstanceAs fooInDef
-                  }
+      inside(xform(entity)) {
+        case Decl(_, DescEntity(EntityVariant.Fsm, List(main, foo))) =>
+          inside(main) {
+            case EntDecl(
+                Decl(_, DescFunc(_, _, _, List(StmtExpr(ExprCall(ExprSym(fooInMain), _)))))) =>
+              inside(foo) {
+                case EntDecl(Decl(Sym(fooInDef, Nil), _)) =>
+                  fooInMain should be theSameInstanceAs fooInDef
               }
           }
       }
@@ -406,52 +381,26 @@ final class NamerSpec extends FreeSpec with AlogicTest {
     }
 
     "resolve entity symbols in instantiations" in {
-      val entityA = """fsm a {}""".stripMargin.asTree[Entity]
+      val entityA = """fsm a {}""".stripMargin.asTree[Decl]
       val entityB = """|network b {
                        |  i = new a();
-                       |}""".stripMargin.asTree[Entity]
+                       |}""".stripMargin.asTree[Decl]
 
-      cc.addGlobalEntities(List(entityA, entityB))
+      cc.addGlobalDecls(List(entityA, entityB))
 
       val treeA = entityA rewrite namer
       val treeB = entityB rewrite new Namer
 
       val aSym = treeA match {
-        case Entity(Sym(symbol, Nil), _) => symbol
-        case _                           => fail
+        case Decl(Sym(symbol, Nil), _) => symbol
+        case _                         => fail
       }
-
-      aSym.isTypeSymbol shouldBe true
 
       inside(treeB) {
-        case Entity(_, instances) =>
-          inside(instances.head) {
-            case EntInstance(Sym(_, Nil), Sym(sym, Nil), Nil, Nil) =>
+        case Decl(_, DescEntity(_, List(instance))) =>
+          inside(instance) {
+            case EntDecl(Decl(_, DescInstance(ExprCall(ExprSym(sym), Nil)))) =>
               sym should be theSameInstanceAs aSym
-          }
-      }
-    }
-
-    "resolve instantiations of nested entities" in {
-      val entity = """|network a {
-                      |  new fsm b { }
-                      |}""".stripMargin.asTree[Entity]
-
-      cc.addGlobalEntity(entity)
-
-      val tree = entity rewrite namer
-
-      inside(tree) {
-        case Entity(_, List(bEntity, bInstance)) =>
-          inside(bInstance) {
-            case EntInstance(Sym(iSym, Nil), Sym(eSym, Nil), _, _) =>
-              iSym.isTermSymbol shouldBe true
-              eSym.isTypeSymbol shouldBe true
-              inside(bEntity) {
-                case EntEntity(Entity(Sym(sym, Nil), _)) =>
-                  eSym should be theSameInstanceAs sym
-                  iSym shouldNot be theSameInstanceAs sym
-              }
           }
       }
     }
@@ -460,19 +409,14 @@ final class NamerSpec extends FreeSpec with AlogicTest {
       val entity = """|fsm a {
                       |  void main() { goto foo; }
                       |  void foo() {}
-                      |}""".stripMargin.asTree[Entity]
+                      |}""".stripMargin.asTree[Decl]
 
-      cc.addGlobalEntity(entity)
-
-      val tree = entity rewrite namer
-
-      inside(tree) {
-        case Entity(_, List(main, foo)) =>
+      inside(xform(entity)) {
+        case Decl(_, DescEntity(EntityVariant.Fsm, List(main, foo))) =>
           inside(main) {
-            case EntFunction(Sym(_, Nil), List(StmtGoto(ExprSym(sym)))) =>
-              sym.isTermSymbol shouldBe true
+            case EntDecl(Decl(Sym(_, Nil), DescFunc(_, _, _, List(StmtGoto(ExprSym(sym)))))) =>
               inside(foo) {
-                case EntFunction(Sym(fooSym, Nil), Nil) =>
+                case EntDecl(Decl(Sym(fooSym, Nil), _)) =>
                   sym should be theSameInstanceAs fooSym
               }
           }
@@ -495,18 +439,14 @@ final class NamerSpec extends FreeSpec with AlogicTest {
           val symA = declA.symbol
           val symB = declB.symbol
           inside(declC) {
-            case Decl(symbol, _) =>
-              symbol.kind match {
-                case TypeVector(elementType, sz) =>
-                  inside(sz) {
-                    case ExprSym(sym) =>
-                      sym should be theSameInstanceAs symA
-                  }
-                  inside(elementType) {
-                    case TypeSInt(ExprSym(sym)) =>
-                      sym should be theSameInstanceAs symB
-                  }
-                case _ => fail()
+            case Decl(_, DescVar(ExprIndex(et, sz), _)) =>
+              inside(sz) {
+                case ExprSym(sym) =>
+                  sym should be theSameInstanceAs symA
+              }
+              inside(et) {
+                case ExprCall(ExprType(TypeNum(true)), List(ArgP(ExprSym(sym)))) =>
+                  sym should be theSameInstanceAs symB
               }
           }
       }
@@ -526,9 +466,8 @@ final class NamerSpec extends FreeSpec with AlogicTest {
         case StmtBlock(List(StmtDecl(declA: Decl), StmtDecl(declB: Decl))) =>
           val symA = declA.symbol
           inside(declB) {
-            case Decl(symbol, _) =>
-              val TypeArray(TypeUInt(Expr(1)), size) = symbol.kind
-              inside(size) {
+            case Decl(_, DescArray(ExprType(TypeUInt(w)), sz)) if w == 1 =>
+              inside(sz) {
                 case ExprSym(sym) =>
                   sym should be theSameInstanceAs symA
               }
@@ -544,240 +483,76 @@ final class NamerSpec extends FreeSpec with AlogicTest {
       val tree = block rewrite namer
 
       tree should matchPattern {
-        case ExprType(TypeUInt(ExprCall(_: ExprSym, List(_: ExprNum)))) =>
+        case ExprCall(ExprType(TypeNum(false)), List(ArgP(ExprCall(ExprSym(_), List(ArgP(_)))))) =>
       }
       cc.messages shouldBe empty
     }
 
-    "attach correct types to symbols - entity" in {
-      val root = """|fsm a {
-                    |  in bool a;
-                    |  out i3 b;
-                    |  param u8 P = 2;
-                    |}""".stripMargin.asTree[Root]
-      cc.addGlobalEntity(root.entity)
-      val tree = root rewrite namer
+    "use unique symbols in definitions" in {
+      val block = """|fsm a {
+                     |  i8 a;
+                     |}""".stripMargin.asTree[Root]
 
-      val symA = tree getFirst { case Entity(Sym(symbol, Nil), _) => symbol }
-      inside(symA.kind) {
-        case TypeEntity("a", List(sA, sB), List(sP)) =>
-          sA.kind shouldBe TypeIn(TypeUInt(Expr(1)), FlowControlTypeNone)
-          sB.kind shouldBe TypeOut(TypeSInt(Expr(3)), FlowControlTypeNone, StorageTypeDefault)
-          sP.kind shouldBe TypeParam(TypeUInt(Expr(8)))
+      val tree = block rewrite namer
+
+      cc.messages shouldBe empty
+
+      inside(tree) {
+        case Root(List(RizDecl(Decl(Sym(outerA, _), DescEntity(_, List(decl)))))) =>
+          inside(decl) {
+            case EntDecl(Decl(Sym(innerA, _), _)) =>
+              outerA shouldNot be theSameInstanceAs innerA
+          }
       }
-    }
-
-    "attach correct types to symbols - typedef" in {
-      val root = "typedef bool a; fsm b {}".asTree[Root]
-      cc.addGlobalEntity(root.entity)
-      val tree = root rewrite namer
-
-      val symA = tree collectFirst { case Defn(symbol) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeUInt(Expr(1))
-    }
-
-    "attach correct types to symbols - struct" in {
-      val root = "struct a { bool a; i2 b; } fsm b {}".asTree[Root]
-      cc.addGlobalEntity(root.entity)
-      val tree = root rewrite namer
-
-      val symA = tree collectFirst { case Defn(symbol) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeStruct(
-        "a",
-        List("a", "b"),
-        List(TypeUInt(Expr(1)), TypeSInt(Expr(2)))
-      )
-    }
-
-    "attach correct types to symbols - function" in {
-      val entity = "fsm foo { void a() {} }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Sym(symbol, Nil) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeCtrlFunc(Nil, TypeVoid)
-    }
-
-    "attach correct types to symbols - instance" in {
-      val entityA = "fsm a {}".asTree[Entity]
-      val entityB = "fsm b { c = new a(); }".asTree[Entity]
-      cc.addGlobalEntities(List(entityA, entityB))
-      entityA rewrite namer
-      val tree = entityB rewrite namer
-
-      val symA = tree collectFirst {
-        case Sym(symbol: TypeSymbol, Nil) if symbol.name == "a" => symbol
-      }
-      symA.value.kind shouldBe TypeEntity("a", Nil, Nil)
-      val symC = tree collectFirst {
-        case Sym(symbol: TermSymbol, Nil) if symbol.name == "c" => symbol
-      }
-      symC.value.kind shouldBe TypeInstance(symA.value)
-    }
-
-    "attach correct types to symbols - decl in" in {
-      val entity = "fsm foo { in bool a; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeIn(TypeUInt(Expr(1)), FlowControlTypeNone)
-    }
-
-    "attach correct types to symbols - decl out" in {
-      val entity = "fsm foo { out bool a; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeOut(TypeUInt(Expr(1)), FlowControlTypeNone, StorageTypeDefault)
-    }
-
-    "attach correct types to symbols - decl param" in {
-      val entity = "fsm foo { param bool a = false; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeParam(TypeUInt(Expr(1)))
-    }
-
-    "attach correct types to symbols - decl const" in {
-      val entity = "fsm foo { const bool a = false; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeConst(TypeUInt(Expr(1)))
-    }
-
-    "attach correct types to symbols - decl pipeline" in {
-      val entity = "fsm foo { pipeline bool a; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypePipeline(TypeUInt(Expr(1)))
-    }
-
-    "attach correct types to symbols - decl array" in {
-      val entity = "fsm foo { bool a[2]; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeArray(TypeUInt(Expr(1)), Expr(2))
-    }
-
-    "attach correct types to symbols - decl vec" in {
-      val entity = "fsm foo { i4[3][2] a; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeVector(TypeVector(TypeSInt(Expr(4)), Expr(2)), Expr(3))
-    }
-
-    "attach correct types to symbols - decl scalar" in {
-      val entity = "fsm foo { u2 a; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeUInt(Expr(2))
-    }
-
-    "attach correct types to symbols - decl void" in {
-      val entity = "fsm foo { void a; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeVoid
-    }
-
-    "attach correct types to symbols - decl ref" in {
-      val root = "typedef bool b; fsm foo { b a; }".asTree[Root]
-      cc.addGlobalEntity(root.entity)
-      val tree = root rewrite namer
-
-      val symB = tree collectFirst { case Defn(symbol) if symbol.name == "b" => symbol }
-      symB.value.isTypeSymbol shouldBe true
-      val symA = tree collectFirst { case Decl(symbol, _) if symbol.name == "a" => symbol }
-      symA.value.kind shouldBe TypeRef(Sym(symB.value, Nil))
     }
 
     "attach source attributes to symbols - function" in {
-      val entity = "fsm foo { (* reclimit = 1 *) void a() {} }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
+      val entity = "fsm foo { (* reclimit = 1 *) void a() {} }".asTree[Decl]
+      val tree = xform(entity)
 
-      val symA = tree collectFirst {
+      val symA = tree getFirst {
         case Sym(symbol, Nil) if symbol.name == "a" => symbol
       }
-      symA.value.kind shouldBe TypeCtrlFunc(Nil, TypeVoid)
-      symA.value.attr.recLimit.get.value shouldBe Expr(1)
+      symA.attr.recLimit.get.value shouldBe Expr(1)
     }
 
     "attach source attributes to symbols - entity" in {
-      val entity = "(* stacklimit = 2 *) fsm foo { }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
+      val entity = "(* stacklimit = 2 *) fsm foo { }".asTree[Decl]
+      val tree = xform(entity)
 
-      val symA = tree collectFirst { case Entity(Sym(symbol, Nil), _) => symbol }
-      symA.value.kind shouldBe TypeEntity("foo", Nil, Nil)
-      symA.value.attr.stackLimit.get.value shouldBe Expr(2)
+      val symA = tree getFirst { case Decl(Sym(symbol, Nil), _) if symbol.name == "foo" => symbol }
+      symA.attr.stackLimit.get.value shouldBe Expr(2)
     }
 
     "attach source attributes to symbols - nested entity" in {
-      val entity = "network foo { (* stacklimit = 3 *) fsm bar {} }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
+      val entity = "network foo { (* stacklimit = 3 *) fsm bar {} }".asTree[Decl]
+      val tree = xform(entity)
 
-      val symA = tree collectFirst {
-        case Entity(Sym(symbol, Nil), _) if symbol.name == "bar" => symbol
-      }
-      symA.value.kind shouldBe TypeEntity("bar", Nil, Nil)
-      symA.value.attr.stackLimit.get.value shouldBe Expr(3)
-    }
-
-    "attach source attributes to symbols - instance" in {
-      val entity = "fsm foo { (* unused *) new (* stacklimit = 3 *) fsm bar {} }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
-
-      val (iSymbol, eSymbol) = tree getFirst {
-        case EntInstance(Sym(iSymbol: TermSymbol, Nil), Sym(eSymbol: TypeSymbol, Nil), _, _) =>
-          (iSymbol, eSymbol)
-      }
-      iSymbol.kind shouldBe TypeInstance(eSymbol)
-      iSymbol.attr.unused.get.value shouldBe true
-      eSymbol.kind shouldBe TypeEntity("bar$", Nil, Nil)
-      eSymbol.attr.stackLimit.get.value shouldBe Expr(3)
+      val symA = tree getFirst { case Decl(Sym(symbol, Nil), _) if symbol.name == "bar" => symbol }
+      symA.attr.stackLimit.get.value shouldBe Expr(3)
     }
 
     "attach source attributes to symbols - declaration" in {
-      val entity = "fsm foo { (* unused *) i8 a; }".asTree[Entity]
-      cc.addGlobalEntity(entity)
-      val tree = entity rewrite namer
+      val entity = "fsm foo { (* unused *) i8 a; }".asTree[Decl]
+      val tree = xform(entity)
 
-      val symbol = tree getFirst { case Decl(symbol: TermSymbol, _) => symbol }
-      symbol.kind shouldBe TypeSInt(Expr(8))
-      symbol.attr.unused.get.value shouldBe true
+      val symA = tree getFirst { case Decl(Sym(symbol, Nil), _: DescVar) => symbol }
+      symA.attr.unused.get.value shouldBe true
     }
 
     "check dictionary identifier declarations only appear inside 'gen' loops" - {
       "entity" - {
         for {
-          (variant, text, hint) <- List(
-            ("network", "bool a#[0];", "Declaration"),
-            ("network", "typedef bool a#[0];", "Definition"),
-            ("network", "fsm a#[0] {}", "Definition"),
-            ("network", "a#[0] = new e();", "Declaration"),
-            ("fsm ", "void a#[0]() {}", "Definition")
+          (variant, text) <- List(
+            ("network", "bool a#[0];"),
+            ("network", "typedef bool a#[0];"),
+            ("network", "fsm a#[0] {}"),
+            ("network", "a#[0] = new e();"),
+            ("fsm ", "void a#[0]() {}")
           )
         } {
-          val error = s"$hint with dictionary identifier must appear directly in 'gen' loop scope."
+          val error =
+            "Definition with dictionary identifier must appear directly in 'gen' loop scope."
           text - {
             "entity" in {
               xform(s"$variant e {$text}".asTree[Root])
@@ -810,7 +585,7 @@ final class NamerSpec extends FreeSpec with AlogicTest {
       "stmt" - {
         val text = "bool a#[0];"
         val error =
-          s"Declaration with dictionary identifier must appear directly in 'gen' loop scope."
+          "Definition with dictionary identifier must appear directly in 'gen' loop scope."
 
         "gen if" in {
           s"{gen if (true) {$text}}".asTree[Stmt] rewrite namer
@@ -877,6 +652,885 @@ final class NamerSpec extends FreeSpec with AlogicTest {
           cc.messages.loneElement should beThe[Error](error)
         }
       }
+    }
+
+    "add choice symbol definitions" - {
+      @scala.annotation.tailrec
+      def checkUnique(symbol: Symbol*): Unit = symbol match {
+        case s +: ss =>
+          ss foreach {
+            s shouldNot be theSameInstanceAs _
+          }
+          checkUnique(ss: _*)
+        case _ =>
+      }
+
+      "correctness" - {
+
+        "if then" in {
+          val tree = xform {
+            """|{
+               |  gen if (1) {
+               |    bool a;
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen), StmtDecl(decl))) =>
+              inside(gen) {
+                case GenIf(_, List(Decl(Sym(a0, _), _: DescVar)), Nil) =>
+                  inside(decl) {
+                    case Decl(Sym(c, _), DescChoice(List(ExprSym(`a0`)))) =>
+                      checkUnique(c, a0)
+                  }
+              }
+          }
+        }
+
+        "if else" in {
+          val tree = xform {
+            """|{
+               |  gen if (1) {} else {
+               |    bool a;
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen), StmtDecl(decl))) =>
+              inside(gen) {
+                case GenIf(_, Nil, List(Decl(Sym(a0, _), _: DescVar))) =>
+                  inside(decl) {
+                    case Decl(Sym(c, _), DescChoice(List(ExprSym(`a0`)))) =>
+                      checkUnique(c, a0)
+                  }
+              }
+          }
+        }
+
+
+        "if then else" in {
+          val tree = xform {
+            """|{
+               |  gen if (1) {
+               |    bool a;
+               |  } else {
+               |    bool a;
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen), StmtDecl(decl))) =>
+              inside(gen) {
+                case GenIf(_,
+                List(Decl(Sym(a0, _), _: DescVar)),
+                List(Decl(Sym(a1, _), _: DescVar))) =>
+                  inside(decl) {
+                    case Decl(Sym(c, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                      checkUnique(c, a0, a1)
+                  }
+              }
+          }
+        }
+
+        "multiple if then " in {
+          val tree = xform {
+            """|{
+               |  gen if (1) {
+               |    bool a;
+               |  }
+               |  gen if (1) {
+               |    bool a;
+               |  }
+               |  gen if (1) {
+               |    bool a;
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen0), StmtGen(gen1), StmtGen(gen2), StmtDecl(decl))) =>
+              inside(gen0) {
+                case GenIf(_, List(Decl(Sym(a0, _), _: DescVar)), Nil) =>
+                  inside(gen1) {
+                    case GenIf(_, List(Decl(Sym(a1, _), _: DescVar)), Nil) =>
+                      inside(gen2) {
+                        case GenIf(_, List(Decl(Sym(a2, _), _: DescVar)), Nil) =>
+                          inside(decl) {
+                            case Decl(Sym(c, _),
+                            DescChoice(
+                            List(ExprSym(`a2`), ExprSym(`a1`), ExprSym(`a0`)))) =>
+                              checkUnique(c, a0, a1, a2)
+                          }
+                      }
+                  }
+              }
+          }
+        }
+
+        "multiple if then else" in {
+          val tree = xform {
+            """|{
+               |  gen if (1) {
+               |    bool a;
+               |  } else {
+               |    bool a;
+               |  }
+               |  gen if (1) {
+               |    bool a;
+               |  } else {
+               |    bool a;
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen0), StmtGen(gen1), StmtDecl(decl))) =>
+              inside(gen0) {
+                case GenIf(_,
+                List(Decl(Sym(a0, _), _: DescVar)),
+                List(Decl(Sym(a1, _), _: DescVar))) =>
+                  inside(gen1) {
+                    case GenIf(_,
+                    List(Decl(Sym(a2, _), _: DescVar)),
+                    List(Decl(Sym(a3, _), _: DescVar))) =>
+                      inside(decl) {
+                        case Decl(
+                        Sym(c, _),
+                        DescChoice(
+                        List(ExprSym(`a3`), ExprSym(`a2`), ExprSym(`a1`), ExprSym(`a0`)))) =>
+                          checkUnique(c, a0, a1, a2, a3)
+                      }
+                  }
+              }
+          }
+        }
+
+        "nested if then" in {
+          val tree = xform {
+            """|{
+               |  gen if (1) {
+               |    gen if (1) {
+               |      bool a;
+               |    }
+               |  } else {
+               |    gen if (1) {
+               |      bool a;
+               |    }
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen), StmtDecl(decl))) =>
+              inside(gen) {
+                case GenIf(_,
+                List(GenIf(_, List(Decl(Sym(a0, _), _: DescVar)), Nil), d0),
+                List(GenIf(_, List(Decl(Sym(a1, _), _: DescVar)), Nil), d1)) =>
+                  inside(d0) {
+                    case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a0`)))) =>
+                      inside(d1) {
+                        case Decl(Sym(c1, _), DescChoice(List(ExprSym(`a1`)))) =>
+                          inside(decl) {
+                            case Decl(Sym(c, _), DescChoice(List(ExprSym(`c1`), ExprSym(`c0`)))) =>
+                              checkUnique(c, c0, c1, a0, a1)
+                          }
+                      }
+                  }
+              }
+          }
+        }
+
+        "nested if then else" in {
+          val tree = xform {
+            """|{
+               |  gen if (1) {
+               |    gen if (1) {
+               |      bool a;
+               |    } else {
+               |      bool a;
+               |    }
+               |  } else {
+               |    gen if (1) {
+               |      bool a;
+               |    } else {
+               |      bool a;
+               |    }
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen), StmtDecl(decl))) =>
+              inside(gen) {
+                case GenIf(_,
+                List(GenIf(_,
+                List(Decl(Sym(a0, _), _: DescVar)),
+                List(Decl(Sym(a1, _), _: DescVar))),
+                d0),
+                List(GenIf(_,
+                List(Decl(Sym(a2, _), _: DescVar)),
+                List(Decl(Sym(a3, _), _: DescVar))),
+                d1)) =>
+                  inside(d0) {
+                    case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                      inside(d1) {
+                        case Decl(Sym(c1, _), DescChoice(List(ExprSym(`a3`), ExprSym(`a2`)))) =>
+                          inside(decl) {
+                            case Decl(Sym(c, _), DescChoice(List(ExprSym(`c1`), ExprSym(`c0`)))) =>
+                              checkUnique(c, c0, c1, a0, a1, a2, a3)
+                          }
+                      }
+                  }
+              }
+          }
+        }
+
+        "for" in {
+          val tree = xform {
+            """|{
+               |  gen for(uint N = 0 ; N < 1 ; N++) {
+               |    bool a#[N];
+               |    bool b;
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen), StmtDecl(decl))) =>
+              inside(gen) {
+                case GenFor(_, _, _, List(Decl(Sym(a0, _), _: DescVar), _: Decl)) =>
+                  inside(decl) {
+                    case Decl(Sym(c, _), DescChoice(List(ExprSym(`a0`)))) =>
+                      checkUnique(c, a0)
+                      c.name shouldBe "a"
+                  }
+              }
+          }
+        }
+
+        "multiple for" in {
+          val tree = xform {
+            """|{
+               |  gen for(uint N = 0 ; N < 1 ; N++) {
+               |    bool a#[N];
+               |    bool b;
+               |  }
+               |  gen for(uint N = 0 ; N < 1 ; N++) {
+               |    bool a#[N];
+               |    bool b;
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(gen0), StmtGen(gen1), StmtDecl(decl))) =>
+              inside(gen0) {
+                case GenFor(_, _, _, List(Decl(Sym(a0, _), _: DescVar), _: Decl)) =>
+                  inside(gen1) {
+                    case GenFor(_, _, _, List(Decl(Sym(a1, _), _: DescVar), _: Decl)) =>
+                      inside(decl) {
+                        case Decl(Sym(c, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                          checkUnique(c, a0, a1)
+                          c.name shouldBe "a"
+                      }
+                  }
+              }
+          }
+        }
+
+        "for if " in {
+          val tree = xform {
+            """|{
+               |  gen for (uint N = 0 ; N < 1 ; N++) {
+               |    gen if (1) {
+               |      bool a#[N];
+               |      bool b;
+               |    }
+               |  }
+               |}""".stripMargin.asTree[Stmt]
+          }
+
+          inside(tree) {
+            case StmtBlock(List(StmtGen(genFor), StmtDecl(decl))) =>
+              inside(genFor) {
+                case GenFor(_, _, _, List(genIf, d0, d1)) =>
+                  inside(genIf) {
+                    case GenIf(_, List(Decl(Sym(a0, _), _: DescVar), Decl(Sym(b0, _), _: DescVar)), Nil) =>
+                      inside(d0) {
+                        case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a0`)))) =>
+                          inside(d1) {
+                            case Decl(Sym(c1, _), DescChoice(List(ExprSym(`b0`)))) =>
+                              inside(decl) {
+                                case Decl(Sym(c, _), DescChoice(List(ExprSym(`c0`)))) =>
+                                  checkUnique(c, c0, a0, b0)
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+        }
+
+      }
+
+      "position" - {
+
+        "decl" - {
+          "entity" in {
+            val tree = xform {
+              """|fsm foo {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Decl]
+            }
+
+            inside(tree) {
+              case Decl(_, DescEntity(_, List(EntGen(gen), EntDecl(decl)))) =>
+                inside(gen) {
+                  case GenIf(_,
+                             List(Decl(Sym(a0, _), _: DescVar)),
+                             List(Decl(Sym(a1, _), _: DescVar))) =>
+                    inside(decl) {
+                      case Decl(Sym(c, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                        checkUnique(c, a0, a1)
+                    }
+                }
+            }
+          }
+
+          // Record..
+
+          "singleton" in {
+            val tree = xform {
+              """|new fsm foo {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Decl]
+            }
+
+            inside(tree) {
+              case Decl(_, DescSingleton(_, List(EntGen(gen), EntDecl(decl)))) =>
+                inside(gen) {
+                  case GenIf(_,
+                             List(Decl(Sym(a0, _), _: DescVar)),
+                             List(Decl(Sym(a1, _), _: DescVar))) =>
+                    inside(decl) {
+                      case Decl(Sym(c, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                        checkUnique(c, a0, a1)
+                    }
+                }
+            }
+          }
+
+          "func" in {
+            val tree = xform {
+              """|void foo() {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Decl]
+            }
+
+            inside(tree) {
+              case Decl(_, DescFunc(_, _, _, List(StmtGen(gen), StmtDecl(decl)))) =>
+                inside(gen) {
+                  case GenIf(_,
+                             List(Decl(Sym(a0, _), _: DescVar)),
+                             List(Decl(Sym(a1, _), _: DescVar))) =>
+                    inside(decl) {
+                      case Decl(Sym(c, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                        checkUnique(c, a0, a1)
+                    }
+                }
+            }
+          }
+
+        }
+
+        "gen" - {
+
+          "if then" in {
+            val tree = xform {
+              """|gen if (1) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Gen]
+            }
+
+            inside(tree) {
+              case GenIf(_,
+                         List(GenIf(_,
+                                    List(Decl(Sym(a0, _), _: DescVar)),
+                                    List(Decl(Sym(a1, _), _: DescVar))),
+                              d0),
+                         Nil) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "if else" in {
+            val tree = xform {
+              """|gen if (1) {} else {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Gen]
+            }
+
+            inside(tree) {
+              case GenIf(_,
+                         Nil,
+                         List(GenIf(_,
+                                    List(Decl(Sym(a0, _), _: DescVar)),
+                                    List(Decl(Sym(a1, _), _: DescVar))),
+                              d0)) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "if then else" in {
+            val tree = xform {
+              """|gen if (1) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |} else {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Gen]
+            }
+
+            inside(tree) {
+              case GenIf(_,
+                         List(GenIf(_,
+                                    List(Decl(Sym(a0, _), _: DescVar)),
+                                    List(Decl(Sym(a1, _), _: DescVar))),
+                              d0),
+                         List(GenIf(_,
+                                    List(Decl(Sym(a2, _), _: DescVar)),
+                                    List(Decl(Sym(a3, _), _: DescVar))),
+                              d1)) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    inside(d1) {
+                      case Decl(Sym(c1, _), DescChoice(List(ExprSym(`a3`), ExprSym(`a2`)))) =>
+                        checkUnique(c0, c1, a0, a1, a2, a3)
+                    }
+                }
+            }
+          }
+
+          "for" in {
+            val tree = xform {
+              """|gen for (u8 a = 0 ; a < 10 ; a++) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Gen]
+            }
+
+            inside(tree) {
+              case GenFor(_,
+                          _,
+                          _,
+                          List(GenIf(_,
+                                     List(Decl(Sym(a0, _), _: DescVar)),
+                                     List(Decl(Sym(a1, _), _: DescVar))),
+                               d0)) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "range" in {
+            val tree = xform {
+              """|gen for (u8 a < 10) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Gen]
+            }
+
+            inside(tree) {
+              case GenRange(_,
+                            _,
+                            _,
+                            List(GenIf(_,
+                                       List(Decl(Sym(a0, _), _: DescVar)),
+                                       List(Decl(Sym(a1, _), _: DescVar))),
+                                 d0)) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+        }
+
+        "ent" - {
+          "comb process" in {
+            val tree = xform {
+              """|fence {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Ent]
+            }
+
+            inside(tree) {
+              case EntCombProcess(List(StmtGen(gen), StmtDecl(decl))) =>
+                inside(gen) {
+                  case GenIf(_,
+                             List(Decl(Sym(a0, _), _: DescVar)),
+                             List(Decl(Sym(a1, _), _: DescVar))) =>
+                    inside(decl) {
+                      case Decl(Sym(c, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                        checkUnique(c, a0, a1)
+                    }
+                }
+            }
+          }
+        }
+
+        "stmt" - {
+          "block" in {
+            val tree = xform {
+              """|{
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtBlock(
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0))) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "if then" in {
+            val tree = xform {
+              """|if (1) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtIf(_,
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0)),
+              Nil) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "if else" in {
+            val tree = xform {
+              """|if (1) {} else {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtIf(_,
+              Nil,
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0))) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "if then else" in {
+            val tree = xform {
+              """|if (1) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |} else {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtIf(_,
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0)),
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a2, _), _: DescVar)),
+              List(Decl(Sym(a3, _), _: DescVar)))),
+              StmtDecl(d1))) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    inside(d1) {
+                      case Decl(Sym(c1, _), DescChoice(List(ExprSym(`a3`), ExprSym(`a2`)))) =>
+                        checkUnique(c0, c1, a0, a1, a2, a3)
+                    }
+                }
+            }
+          }
+
+          "case regular" in {
+            val tree = xform {
+              """|case (1) {
+                 |  1: gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtCase(_,
+              List(CaseRegular(_, List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0))))) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "case default" in {
+            val tree = xform {
+              """|case (1) {
+                 |  default: gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtCase(_,
+              List(CaseDefault(List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0))))) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "loop" in {
+            val tree = xform {
+              """|loop {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtLoop(
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0)),
+              ) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "do" in {
+            val tree = xform {
+              """|do {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |} while (1);""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtDo(_,
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0)),
+              ) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "while" in {
+            val tree = xform {
+              """|while (1) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtWhile(_,
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0)),
+              ) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "for" in {
+            val tree = xform {
+              """|for (u8 a = 0 ; a < 10 ; a++) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+            inside(tree) {
+              case StmtFor(_,
+              _,
+              _,
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0)),
+              ) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+
+          "let" in {
+            val tree = xform {
+              """|let (u8 a = 0) {
+                 |  gen if (1) {
+                 |    bool a;
+                 |  } else {
+                 |    bool a;
+                 |  }
+                 |}""".stripMargin.asTree[Stmt]
+            }
+
+
+            inside(tree) {
+              case StmtLet(_,
+              List(StmtGen(
+              GenIf(_,
+              List(Decl(Sym(a0, _), _: DescVar)),
+              List(Decl(Sym(a1, _), _: DescVar)))),
+              StmtDecl(d0)),
+              ) =>
+                inside(d0) {
+                  case Decl(Sym(c0, _), DescChoice(List(ExprSym(`a1`), ExprSym(`a0`)))) =>
+                    checkUnique(c0, a0, a1)
+                }
+            }
+          }
+        }
+
+      }
+
     }
   }
 }

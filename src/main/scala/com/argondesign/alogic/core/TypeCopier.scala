@@ -29,31 +29,56 @@ object TypeCopier {
     if (elementType eq tree.elementType) tree else TypeVector(elementType, tree.size)
   }
 
-  def apply(tree: TypeArray)(elementType: Type)(implicit cc: CompilerContext): TypeArray = {
-    if (elementType eq tree.elementType) tree else TypeArray(elementType, tree.size)
+  def apply(tree: TypeIn)(kind: Type): TypeIn = {
+    if (kind eq tree.kind) tree else TypeIn(kind.asFund, tree.fc)
   }
 
-  def apply(tree: TypeSram)(elementType: Type)(implicit cc: CompilerContext): TypeSram = {
-    if (elementType eq tree.elementType) tree else TypeSram(elementType, tree.size, tree.st)
+  def apply(tree: TypeOut)(kind: Type): TypeOut = {
+    if (kind eq tree.kind) tree else TypeOut(kind.asFund, tree.fc, tree.st)
   }
 
-  def apply(tree: TypeStack)(elementType: Type): TypeStack = {
-    if (elementType eq tree.elementType) tree else TypeStack(elementType, tree.size)
+  def apply(tree: TypePipeline)(kind: Type): TypePipeline = {
+    if (kind eq tree.kind) tree else TypePipeline(kind.asFund)
   }
 
-  def apply(tree: TypeStruct)(fieldTypes: List[Type]): TypeStruct = {
-    if (fieldTypes eq tree.fieldTypes) {
-      tree
-    } else {
-      TypeStruct(tree.name, tree.fieldNames, fieldTypes)
-    }
+  def apply(tree: TypeParam)(kind: Type): TypeParam = {
+    if (kind eq tree.kind) tree else TypeParam(kind.asFund)
+  }
+
+  def apply(tree: TypeConst)(kind: Type): TypeConst = {
+    if (kind eq tree.kind) tree else TypeConst(kind.asFund)
+  }
+
+  def apply(tree: TypeGen)(kind: Type): TypeGen = {
+    if (kind eq tree.kind) tree else TypeGen(kind.asFund)
+  }
+
+  def apply(tree: TypeArray)(kind: Type): TypeArray = {
+    if (kind eq tree.kind) tree else TypeArray(kind.asFund, tree.size)
+  }
+
+  def apply(tree: TypeSram)(kind: Type): TypeSram = {
+    if (kind eq tree.kind) tree else TypeSram(kind.asFund, tree.size, tree.st)
+  }
+
+  def apply(tree: TypeStack)(kind: Type): TypeStack = {
+    if (kind eq tree.kind) tree else TypeStack(kind.asFund, tree.size)
+  }
+
+  def apply(tree: TypeType)(kind: Type): TypeType = {
+    if (kind eq tree.kind) tree else TypeType(kind.asFund)
+  }
+
+  def apply(tree: TypeNone)(kind: Type): TypeNone = {
+    if (kind eq tree.kind) tree else TypeNone(kind.asFund)
   }
 
   def apply(tree: TypeCombFunc)(argTypes: List[Type], retType: Type): TypeCombFunc = {
     if ((argTypes eq tree.argTypes) && (retType eq tree.retType)) {
       tree
     } else {
-      TypeCombFunc(argTypes, retType)
+      assert(argTypes forall { _.isFund })
+      tree.copy(retType = retType.asFund, argTypes = argTypes.asInstanceOf[List[TypeFund]])
     }
   }
 
@@ -61,36 +86,9 @@ object TypeCopier {
     if ((argTypes eq tree.argTypes) && (retType eq tree.retType)) {
       tree
     } else {
-      TypeCtrlFunc(argTypes, retType)
+      assert(argTypes forall { _.isFund })
+      tree.copy(retType = retType.asFund, argTypes = argTypes.asInstanceOf[List[TypeFund]])
     }
-  }
-
-  def apply(tree: TypeIn)(kind: Type): TypeIn = {
-    if (kind eq tree.kind) tree else TypeIn(kind, tree.fct)
-  }
-
-  def apply(tree: TypeOut)(kind: Type): TypeOut = {
-    if (kind eq tree.kind) tree else TypeOut(kind, tree.fct, tree.st)
-  }
-
-  def apply(tree: TypePipeline)(kind: Type): TypePipeline = {
-    if (kind eq tree.kind) tree else TypePipeline(kind)
-  }
-
-  def apply(tree: TypeParam)(kind: Type): TypeParam = {
-    if (kind eq tree.kind) tree else TypeParam(kind)
-  }
-
-  def apply(tree: TypeConst)(kind: Type): TypeConst = {
-    if (kind eq tree.kind) tree else TypeConst(kind)
-  }
-
-  def apply(tree: TypeGen)(kind: Type): TypeGen = {
-    if (kind eq tree.kind) tree else TypeGen(kind)
-  }
-
-  def apply(tree: TypeType)(kind: Type): TypeType = {
-    if (kind eq tree.kind) tree else TypeType(kind)
   }
 
 }

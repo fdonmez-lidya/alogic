@@ -21,7 +21,8 @@ import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.StackFactory
 import com.argondesign.alogic.core.Symbols._
 import com.argondesign.alogic.core.Types.TypeStack
-import com.argondesign.alogic.core.Types._
+import com.argondesign.alogic.core.enums.EntityVariant
+import com.argondesign.alogic.util.unreachable
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -30,18 +31,18 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
 
   // Map from original stack variable symbol to the
   // corresponding stack entity and instance symbols
-  private[this] val stackMap = mutable.Map[TermSymbol, (Entity, TermSymbol)]()
+  private[this] val stackMap = mutable.Map[Symbol, (Decl, Symbol)]()
 
   // Stack of extra statements to emit when finished with a statement
   private[this] val extraStmts = mutable.Stack[mutable.ListBuffer[Stmt]]()
 
   override def skip(tree: Tree): Boolean = tree match {
-    case entity: Entity => entitySymbol.attr.variant.value == "network"
-    case _              => false
+    case Decl(_, DescEntity(EntityVariant.Net, _)) => true
+    case _                                         => false
   }
 
   override def enter(tree: Tree): Unit = tree match {
-    case Decl(symbol, _) =>
+    case Decl(Sym(symbol, _), _: DescStack) =>
       symbol.kind match {
         case TypeStack(kind, depth) =>
           // Construct the stack entity
@@ -50,22 +51,19 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
           // TODO: mark inline
           val eName = entitySymbol.name + cc.sep + "stack" + cc.sep + pName
           val stackEntity = StackFactory(eName, loc, kind, depth)
-          val instanceSymbol = cc.newTermSymbol(pName, loc, TypeInstance(stackEntity.symbol))
+          val instanceSymbol = cc.newSymbol(pName, loc) tap {
+            _.kind = stackEntity.symbol.kind.asType.kind
+          }
           stackMap(symbol) = (stackEntity, instanceSymbol)
           // Clear enable when the entity stalls
           entitySymbol.attr.interconnectClearOnStall.append((instanceSymbol, "en"))
-        case _ =>
+        case _ => unreachable
       }
 
-    ////////////////////////////////////////////////////////////////////////////
-    // FlowControlTypeReady
-    ////////////////////////////////////////////////////////////////////////////
-
-    case _: Stmt => {
+    case _: Stmt =>
       // Whenever we enter a new statement, add a new buffer to
       // store potential extra statements
       extraStmts.push(ListBuffer())
-    }
 
     case _ =>
   }
@@ -80,14 +78,14 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
       // Rewrite statements
       //////////////////////////////////////////////////////////////////////////
 
-      case StmtExpr(ExprCall(ExprSelect(ExprSym(symbol: TermSymbol), "push", _), args)) => {
+      case StmtExpr(ExprCall(ExprSelect(ExprSym(symbol), "push", _), List(ArgP(arg)))) => {
         stackMap.get(symbol) map {
           case (_, iSymbol) => {
             StmtBlock(
               List(
                 assignTrue(ExprSym(iSymbol) select "en"),
                 assignTrue(ExprSym(iSymbol) select "push"),
-                StmtAssign(ExprSym(iSymbol) select "d", args.head)
+                StmtAssign(ExprSym(iSymbol) select "d", arg)
               ))
           }
         } getOrElse {
@@ -95,13 +93,13 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
         }
       }
 
-      case StmtExpr(ExprCall(ExprSelect(ExprSym(symbol: TermSymbol), "set", _), args)) => {
+      case StmtExpr(ExprCall(ExprSelect(ExprSym(symbol), "set", _), List(ArgP(arg)))) => {
         stackMap.get(symbol) map {
           case (_, iSymbol) => {
             StmtBlock(
               List(
                 assignTrue(ExprSym(iSymbol) select "en"),
-                StmtAssign(ExprSym(iSymbol) select "d", args.head)
+                StmtAssign(ExprSym(iSymbol) select "d", arg)
               ))
           }
         } getOrElse {
@@ -113,7 +111,7 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
       // Rewrite expressions
       //////////////////////////////////////////////////////////////////////////
 
-      case ExprCall(ExprSelect(ExprSym(symbol: TermSymbol), "pop", _), Nil) => {
+      case ExprCall(ExprSelect(ExprSym(symbol), "pop", _), Nil) => {
         stackMap.get(symbol) map {
           case (_, iSymbol) => {
             extraStmts.top append assignTrue(ExprSym(iSymbol) select "en")
@@ -125,7 +123,7 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
         }
       }
 
-      case ExprSelect(ExprSym(symbol: TermSymbol), "top", _) => {
+      case ExprSelect(ExprSym(symbol), "top", _) => {
         stackMap.get(symbol) map {
           case (_, iSymbol) => ExprSym(iSymbol) select "q"
         } getOrElse {
@@ -133,7 +131,7 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
         }
       }
 
-      case ExprSelect(ExprSym(symbol: TermSymbol), "full", _) => {
+      case ExprSelect(ExprSym(symbol), "full", _) => {
         stackMap.get(symbol) map {
           case (_, iSymbol) => ExprSym(iSymbol) select "full"
         } getOrElse {
@@ -141,7 +139,7 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
         }
       }
 
-      case ExprSelect(ExprSym(symbol: TermSymbol), "empty", _) => {
+      case ExprSelect(ExprSym(symbol), "empty", _) => {
         stackMap.get(symbol) map {
           case (_, iSymbol) => ExprSym(iSymbol) select "empty"
         } getOrElse {
@@ -153,22 +151,20 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
       // Add stack entities
       //////////////////////////////////////////////////////////////////////////
 
-      case entity: Entity if stackMap.nonEmpty => {
+      case decl @ Decl(_, desc: DescEntity) if stackMap.nonEmpty => {
         val newBody = List from {
           // Drop stack declarations and the comb process
-          entity.body.iterator filterNot {
-            case EntDecl(Decl(symbol, _)) => symbol.kind.isStack
-            case _: EntCombProcess        => true
-            case _                        => false
+          desc.body.iterator filter {
+            case EntDecl(Decl(_, _: DescStack)) => false
+            case _: EntCombProcess              => false
+            case _                              => true
           } concat {
             // Add instances
-            for ((entity, instance) <- stackMap.values) yield {
-              EntInstance(Sym(instance, Nil), Sym(entity.symbol, Nil), Nil, Nil)
-            }
+            stackMap.valuesIterator map { case (_, iSymbol) => iSymbol.decl } map EntDecl
           } concat {
             Iterator single {
               // Add leading statements to the state system
-              assert(entity.combProcesses.lengthIs <= 1)
+              assert(desc.combProcesses.lengthIs <= 1)
 
               val leading = stackMap.values map {
                 _._2
@@ -184,7 +180,7 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
                 )
               }
 
-              entity.combProcesses.headOption map {
+              desc.combProcesses.headOption map {
                 case EntCombProcess(stmts) => EntCombProcess(List.concat(leading, stmts))
               } getOrElse {
                 EntCombProcess(leading.toList)
@@ -193,11 +189,9 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
           }
         }
 
-        val newEntity = entity.copy(body = newBody)
-
+        val newDecl = decl.copy(desc = desc.copy(body = newBody))
         val stackEntities = stackMap.values map { _._1 }
-
-        Thicket(newEntity :: stackEntities.toList)
+        Thicket(newDecl :: stackEntities.toList)
       }
 
       case _ => tree
@@ -224,9 +218,7 @@ final class LowerStacks(implicit cc: CompilerContext) extends TreeTransformer {
     assert(extraStmts.isEmpty)
 
     tree visit {
-      case node @ ExprCall(ExprSelect(ref, sel, _), _) if ref.tpe.isInstanceOf[TypeStack] => {
-        cc.ice(node, s"Stack .${sel} remains")
-      }
+      case node @ ExprSelect(ref, sel, _) if ref.tpe.isStack => cc.ice(node, s"Stack .$sel remains")
     }
   }
 

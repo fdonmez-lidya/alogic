@@ -28,27 +28,17 @@ final class InlineUnsizedConst(implicit cc: CompilerContext) extends TreeTransfo
   override def transform(tree: Tree): Tree = tree match {
     case ExprSym(symbol) =>
       symbol.kind match {
-        case TypeConst(_: TypeNum) => walk(symbol.attr.init.value)
+        case TypeConst(_: TypeNum) => walk(symbol.init.get)
         case _                     => tree
       }
 
-    case Decl(symbol, Some(init)) if symbol.kind.isConst => {
-      symbol.attr.init set init
-      tree
-    }
-
-    case entity: Entity => {
+    // TODO: Same for Record
+    case entity: DescEntity =>
       val newBody = entity.body filter {
-        case EntDecl(Decl(symbol, _)) =>
-          symbol.kind match {
-            case TypeConst(_: TypeNum) => false
-            case _                     => true
-          }
-        case _ => true
+        case EntDecl(Decl(Sym(symbol, _), _: DescConst)) => !symbol.kind.underlying.isNum
+        case _                                           => true
       }
-
       TypeAssigner(entity.copy(body = newBody) withLoc entity.loc)
-    }
 
     case _ => tree
   }

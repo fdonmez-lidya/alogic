@@ -23,33 +23,26 @@ import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Error
 import com.argondesign.alogic.typer.Typer
-import com.argondesign.alogic.util.unreachable
 import org.scalatest.FreeSpec
 
 final class PortCheckASpec extends FreeSpec with AlogicTest {
 
-  implicit val cc = new CompilerContext
+  implicit val cc: CompilerContext = new CompilerContext
 
-  def xform(trees: Tree*): Unit = {
-    val entities = trees map {
-      _ match {
-        case Root(_, entity: Entity) => entity
-        case entity: Entity          => entity
-        case _                       => unreachable
-      }
+  def xform(tree: Tree): Unit = {
+    tree match {
+      case root: Root => cc.addGlobalDecls(root.decls)
+      case decl: Decl => cc.addGlobalDecl(decl)
+      case _          =>
     }
 
-    cc.addGlobalEntities(entities)
-
-    trees map {
+    tree pipe {
       _ rewrite new Checker
-    } map {
+    } pipe {
       _ rewrite new Namer
-    } map {
-      _ rewrite new Desugar
-    } map {
+    } pipe {
       _ rewrite new Typer
-    } foreach {
+    } tap {
       _ rewrite new PortCheckA
     }
   }
@@ -88,7 +81,7 @@ final class PortCheckASpec extends FreeSpec with AlogicTest {
                          |  }
                          |
                          |  ${conn}
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (msg.isEmpty) {
             cc.messages shouldBe empty
@@ -123,7 +116,7 @@ final class PortCheckASpec extends FreeSpec with AlogicTest {
         s"'${fc}' with '${st}'" in {
           val tree = s"""|fsm a {
                          |   (* unused *) out ${fc} ${st} bool po;
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (msg.isEmpty) {
             cc.messages shouldBe empty

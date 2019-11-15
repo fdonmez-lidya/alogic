@@ -23,5 +23,5 @@ network dictident_entity_2 {
   i_a -> inner_a.ii; inner_a.oo -> o_a;
   i_b -> inner_b.ii; inner_b.oo -> o_b;
 }
-// :13: ERROR: Redefinition of type 'inner' with previous definition at
+// :13: ERROR: Redefinition of 'inner' with previous definition at
 // :13: ERROR: ... .*dictident_entity_2.alogic:8

@@ -16,16 +16,17 @@
 package com.argondesign.alogic.passes
 
 import com.argondesign.alogic.ast.TreeTransformer
-import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.ast.Trees.Expr.InstancePortRef
+import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeAccept
 import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeReady
 import com.argondesign.alogic.core.Loc
 import com.argondesign.alogic.core.StorageTypes._
-import com.argondesign.alogic.core.Symbols.TermSymbol
+import com.argondesign.alogic.core.Symbols.Symbol
 import com.argondesign.alogic.core.Types.TypeIn
 import com.argondesign.alogic.core.Types.TypeOut
+import com.argondesign.alogic.util.unreachable
 
 import scala.collection.mutable
 
@@ -35,15 +36,30 @@ final class PortCheckA(implicit cc: CompilerContext) extends TreeTransformer {
     cc.error(lhs, s"'${lhs.toSource}' has multiple sinks", s"Previous '->' is at: ${loc.prefix}")
   }
 
-  override def skip(tree: Tree): Boolean = tree match {
-    case _: Root   => false
-    case _: Entity => false
-    case _         => true
-  }
+  // TODO: add back
+//  override def skip(tree: Tree): Boolean = tree match {
+//    case _: Root   => false
+//    case _: Decl => false
+//    case _: Decl => false
+//    case _         => true
+//  }
 
   override def enter(tree: Tree): Unit = tree match {
 
-    case entity: Entity => {
+    case _: DescEntity | _: DescSingleton =>
+      // Gather the parts
+
+      val connects = tree match {
+        case d: DescEntity    => d.connects
+        case d: DescSingleton => d.connects
+        case _                => unreachable
+      }
+
+      val decls = tree match {
+        case d: DescEntity    => d.decls
+        case d: DescSingleton => d.decls
+        case _                => unreachable
+      }
 
       //////////////////////////////////////////////////////////////////////////
       // Check multiple sinks - sync ready ports only
@@ -51,28 +67,26 @@ final class PortCheckA(implicit cc: CompilerContext) extends TreeTransformer {
 
       // Map of symbols appearing on the left of a connect that is declared by
       // us to the location of the connect
-      val drivOurs = mutable.Map[TermSymbol, Loc]()
+      val drivOurs = mutable.Map[Symbol, Loc]()
       // Map of instance/port symbol pairs on the left of a connect to the
       // location of the connect
-      val drivInst = mutable.Map[(TermSymbol, TermSymbol), Loc]()
+      val drivInst = mutable.Map[(Symbol, Symbol), Loc]()
 
       for {
-        connect @ EntConnect(lhs, _) <- entity.connects
+        connect @ EntConnect(lhs, _) <- connects
       } {
         lhs match {
-          case rhs @ ExprSym(symbol: TermSymbol) => {
-            if (symbol.kind.isIn && symbol.kind.asInstanceOf[TypeIn].fct == FlowControlTypeReady) {
+          case ExprSym(symbol) =>
+            if (symbol.kind.isIn && symbol.kind.asInstanceOf[TypeIn].fc == FlowControlTypeReady) {
               drivOurs.get(symbol) foreach { multipleSinkError(lhs, _) }
               drivOurs(symbol) = connect.loc
             }
-          }
-          case InstancePortRef(iSymbol, pSymbol) => {
-            if (pSymbol.kind.asInstanceOf[TypeOut].fct == FlowControlTypeReady) {
+          case InstancePortRef(iSymbol, pSymbol) =>
+            if (pSymbol.kind.asInstanceOf[TypeOut].fc == FlowControlTypeReady) {
               val key = (iSymbol, pSymbol)
               drivInst.get(key) foreach { multipleSinkError(lhs, _) }
               drivInst(key) = connect.loc
             }
-          }
           case _ => ()
         }
       }
@@ -82,19 +96,16 @@ final class PortCheckA(implicit cc: CompilerContext) extends TreeTransformer {
       //////////////////////////////////////////////////////////////////////////
 
       for {
-        decl @ Decl(symbol: TermSymbol, _) <- entity.declarations
+        decl @ Decl(Sym(symbol, _), _) <- decls
       } {
         symbol.kind match {
-          case TypeOut(_, FlowControlTypeReady, StorageTypeWire) => {
+          case TypeOut(_, FlowControlTypeReady, StorageTypeWire) =>
             cc.error(decl, "'sync ready' port cannot use 'wire' storage specifier")
-          }
-          case TypeOut(_, FlowControlTypeAccept, st) if st != StorageTypeWire => {
+          case TypeOut(_, FlowControlTypeAccept, st) if st != StorageTypeWire =>
             cc.error(decl, "'sync accept' port must use 'wire' storage specifier")
-          }
           case _ => ()
         }
       }
-    }
 
     case _ => ()
   }

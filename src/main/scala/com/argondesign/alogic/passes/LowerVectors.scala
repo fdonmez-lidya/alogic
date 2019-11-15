@@ -20,14 +20,14 @@ import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Symbols._
 import com.argondesign.alogic.core.Types._
-import com.argondesign.alogic.util.unreachable
 import com.argondesign.alogic.lib.Math.clog2
+import com.argondesign.alogic.util.unreachable
 
 import scala.collection.mutable
 
 final class LowerVectors(implicit cc: CompilerContext) extends TreeTransformer {
 
-  private[this] val vectorType = mutable.Set[TermSymbol]()
+  private[this] val vectorType = mutable.Set[Symbol]()
 
   private[this] val tgtTpe = mutable.Stack[Type]()
 
@@ -36,16 +36,16 @@ final class LowerVectors(implicit cc: CompilerContext) extends TreeTransformer {
   private[this] var catLevel = 0
 
   override def enter(tree: Tree): Unit = tree match {
-    case entity: Entity => {
+    case desc: DescEntity => {
       // Change types of all vectors to plain TypeUInt
       // TODO: arrays as well
       for {
-        Decl(symbol, _) <- entity.declarations
+        Decl(Sym(symbol, _), _) <- desc.decls
         if symbol.kind.underlying.isVector
       } {
         vectorType add symbol
 
-        val newUnderlying = TypeUInt(Expr(symbol.kind.width) regularize symbol.loc)
+        val newUnderlying = TypeUInt(symbol.kind.width)
         val newKind = {
           symbol.kind match {
             case kind: TypeIn     => kind.copy(kind = newUnderlying)
@@ -94,10 +94,13 @@ final class LowerVectors(implicit cc: CompilerContext) extends TreeTransformer {
   override def transform(tree: Tree): Tree = {
     val result = tree match {
 
+      // Update declarations
+      case Decl(Sym(symbol, _), desc) if vectorType contains symbol =>
+        symbol.decl(desc.initializer) regularize tree.loc
+
       // The type of symbols changed, so re-type references
-      case ExprSym(symbol: TermSymbol) if vectorType contains symbol => {
+      case ExprSym(symbol) if vectorType contains symbol =>
         ExprSym(symbol) regularize tree.loc
-      }
 
       // Slice
       case ExprSlice(tgt, lidx, op, ridx) =>
@@ -130,7 +133,7 @@ final class LowerVectors(implicit cc: CompilerContext) extends TreeTransformer {
         tgtTpe.top match {
           case TypeVector(eKind, size) =>
             assert(!tgt.tpe.isVector) // By this point the target should not have a Vector type
-            if (size.value.get == 1) {
+            if (size == 1) {
               fixSign(tgt, eKind.isSigned)
             } else {
               val sExpr = Expr(eKind.width) regularize index.loc

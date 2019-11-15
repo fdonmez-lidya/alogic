@@ -1,6 +1,6 @@
 ////////////////////////////////////////////////////////////////////////////////
 // Argon Design Ltd. Project P8009 Alogic
-// Copyright (c) 2017-2018 Argon Design Ltd. All rights reserved.
+// Copyright (c) 2017-2019 Argon Design Ltd. All rights reserved.
 //
 // This file is covered by the BSD (with attribution) license.
 // See the LICENSE file for the precise wording of the license.
@@ -17,13 +17,14 @@
 
 package com.argondesign.alogic.core
 
-import com.argondesign.alogic.ast.Trees.Entity
-import com.argondesign.alogic.ast.Trees.Root
+import com.argondesign.alogic.ast.Trees.Tree
 import com.argondesign.alogic.builtins.Builtins
+import com.argondesign.alogic.core.Types.TypeError
+import com.argondesign.alogic.core.Types.TypeUnknown
 import com.argondesign.alogic.core.enums.ResetStyle._
 import com.argondesign.alogic.frontend.Frontend
 import com.argondesign.alogic.passes.Passes
-import com.argondesign.alogic.util.unreachable
+import com.argondesign.alogic.typer.Typer
 
 class CompilerContext(val settings: Settings = Settings())
     extends Messaging
@@ -33,15 +34,13 @@ class CompilerContext(val settings: Settings = Settings())
     with Output {
 
   // Shorthand for frequently accessed settings
-  val sep = settings.sep
+  val sep: String = settings.sep
 
   // Name of reset signal
-  val rst = settings.resetStyle match {
+  val rst: String = settings.resetStyle match {
     case AsyncLow | SyncLow => "rst_n"
     case _                  => "rst"
   }
-
-  var postSpecialization = false
 
   var passNumber = 0
 
@@ -51,20 +50,15 @@ class CompilerContext(val settings: Settings = Settings())
       // Create the front end and built the ASTs
       //////////////////////////////////////////////////////////////////////////////
 
-      val frontEndTrees = {
+      val (frontEndTrees, rootDecls) = {
         val frontend = new Frontend(settings.moduleSearchDirs,
                                     settings.includeSearchDirs,
                                     settings.initialDefines)(this)
         frontend(toplevels)
       }
 
-      // Insert entity symbols into the global scope
-      addGlobalEntities {
-        frontEndTrees map {
-          case Root(_, entity: Entity) => entity
-          case _                       => unreachable
-        }
-      }
+      // Insert root decls into the global scope
+      addGlobalDecls(rootDecls)
 
       //////////////////////////////////////////////////////////////////////////////
       // Compile the trees
@@ -77,4 +71,22 @@ class CompilerContext(val settings: Settings = Settings())
       emitMessages()
     }
   }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Entry point to the type checker
+  //////////////////////////////////////////////////////////////////////////////
+
+  // Return Some(false) for type error, Some(true) for well typed, and None,
+  // if the type cannot be determined due to unresolved type parameters
+  def typeCheck(tree: Tree): Option[Boolean] = {
+    if (!tree.hasTpe) {
+      (tree rewrite new Typer()(this)) ensuring { _ eq tree }
+    }
+    tree.tpe match {
+      case TypeUnknown => None
+      case TypeError   => Some(false)
+      case _           => Some(true)
+    }
+  }
+
 }

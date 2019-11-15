@@ -23,40 +23,28 @@ import com.argondesign.alogic.typer.TypeAssigner
 
 final class SplitStructsC(implicit cc: CompilerContext) extends TreeTransformer {
 
-  override def skip(tree: Tree): Boolean = tree match {
-    case _: Entity => false
-    case _         => true
-  }
-
   override def transform(tree: Tree): Tree = tree match {
-    //////////////////////////////////////////////////////////////////////////
-    // Entity
-    //////////////////////////////////////////////////////////////////////////
+    // Types for entities changed. Re-type references
+    case expr @ ExprSym(symbol) if symbol.kind.isEntity || symbol.kind.isType =>
+      TypeAssigner(expr.copy() withLoc expr.loc)
 
-    case entity: Entity => {
+    case desc: DescEntity =>
       // Drop original port declarations
-      val newBody = entity.body filterNot {
-        case EntDecl(Decl(symbol, _)) => symbol.attr.fieldSymbols.isSet
-        case _                        => false
+      val newBody = desc.body filterNot {
+        case EntDecl(decl) => decl.symbol.attr.fieldSymbols.isSet
+        case _             => false
       }
-
-      TypeAssigner(entity.copy(body = newBody) withLoc tree.loc)
-    } tap { result =>
-      // Update type of entity to drop new ports.
-      entitySymbol.kind = result.typeBasedOnContents
-    }
+      TypeAssigner(desc.copy(body = newBody) withLoc tree.loc)
 
     case _ => tree
   }
 
   override def finalCheck(tree: Tree): Unit = {
     tree visit {
-      case node @ Decl(symbol, _) if symbol.kind.deref.underlying.isStruct => {
+      case node @ Decl(_, _: DescRecord) =>
         cc.ice(node, "Struct declaration remains")
-      }
-      case node: Tree if node.tpe.deref.underlying.isStruct => {
+      case node: Tree if node.tpe.underlying.isRecord =>
         cc.ice(node, "Tree of type struct remains", node.toString)
-      }
     }
   }
 

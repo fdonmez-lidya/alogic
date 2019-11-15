@@ -1,7 +1,6 @@
-
 ////////////////////////////////////////////////////////////////////////////////
 // Argon Design Ltd. Project P8009 Alogic
-// Copyright (c) 2017-2018 Argon Design Ltd. All rights reserved.
+// Copyright (c) 2017-2019 Argon Design Ltd. All rights reserved.
 //
 // This file is covered by the BSD (with attribution) license.
 // See the LICENSE file for the precise wording of the license.
@@ -20,213 +19,188 @@ options {
   tokenVocab = AlogicLexer;
 }
 
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 // Start rule for whole source file
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
-start
-  : defn*
-    entity
-    EOF
-  ;
+root : riz* EOF ;
 
-///////////////////////////////////////////////////////////////////////////////
-// Type names
-///////////////////////////////////////////////////////////////////////////////
-
-kind
-  : kind ('[' expr ']')+ # TypeVec
-  | 'bool'               # TypeBool
-  | INTTYPE              # TypeInt
-  | UINTTYPE             # TypeUInt
-  | 'int'  '(' expr ')'  # TypeIntN
-  | 'uint' '(' expr ')'  # TypeUIntN
-  | 'int'                # TypeSNum
-  | 'uint'               # TypeUNum
-  | ident                # TypeIdent
-  | 'void'               # TypeVoid
-  ;
-
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 // Identifiers
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
 ident : IDENTIFIER ('#' '[' expr (',' expr)* ']')? ;
 
-///////////////////////////////////////////////////////////////////////////////
-// Definitions
-///////////////////////////////////////////////////////////////////////////////
-
-defn
-  : 'typedef' kind ident ';'   # DefnTypedef
-  | 'struct' ident '{'
-      field+
-    '}'                        # DefnStruct
-  ;
-
-field: kind IDENTIFIER SEMICOLON;
-
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 // Declarations
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
-decl: attr? declbase ('=' expr)? ';' ;
+decl : attrs? declbase ;
+
+attrs : '(*' attr (',' attr)* '*)' ;
+attr : IDENTIFIER ('=' expr)? ;
 
 declbase
-  : kind ident                                         # DeclVar
-  | 'out' flow_control_type? storage_type? kind ident  # DeclOut
-  | 'in' flow_control_type? kind ident                 # DeclIn
-  | 'param' kind IDENTIFIER                            # DeclParam
-  | 'const' kind IDENTIFIER                            # DeclConst
-  | 'pipeline' kind ident                              # DeclPipeline
-  | kind ident '[' expr ']'                            # DeclArr
-  | 'sram' (wire='wire')? kind ident '[' expr ']'      # DeclSram
+  : expr ident ('=' init=expr)? ';'                     # DeclVar
+  | 'in' fct? expr ident ';'                            # DeclIn
+  | 'out' fct? stt? expr ident ('=' init=expr)? ';'     # DeclOut
+  | 'pipeline' expr ident ';'                           # DeclPipeline
+  | 'param' expr IDENTIFIER ('=' init=expr)?  ';'       # DeclParam
+  | 'const' expr IDENTIFIER '=' expr  ';'               # DeclConst
+  | expr ident '[' expr ']' ';'                         # DeclArr
+  | 'sram' (wire='wire')? expr ident '[' expr ']' ';'   # DeclSram
+  | 'typedef' expr ident ';'                            # DeclType
+  | entity_keyword ident '{' ent* '}'                   # DeclEntity
+  | 'struct' ident '{' rec* '}'                         # DeclRecord
+  | ident '=' 'new' expr ';'                            # DeclInstance
+  | 'new' entity_keyword ident '{' ent* '}'             # DeclSingleton
+  | expr ident '(' ')' '{' stmt* '}'                    # DeclFunc
   ;
 
-flow_control_type
-  : 'sync'        # FlowControlTypeSync
-  | SYNC_READY    # FlowControlTypeSyncReady
-  | SYNC_ACCEPT   # FlowControlTypeSyncAccept
+fct
+  : 'sync'        # FCTSync
+  | SYNC_READY    # FCTSyncReady
+  | SYNC_ACCEPT   # FCTSyncAccept
   ;
 
-storage_type
-  : 'wire'                                      # StorageTypeWire
-  | (slices+=('bubble' | 'fslice' | 'bslice'))+ # StorageTypeSlices
+stt
+  : 'wire'                                      # STTWire
+  | (slices+=('bubble' | 'fslice' | 'bslice'))+ # STTSlices
   ;
 
-///////////////////////////////////////////////////////////////////////////////
-// Entity
-///////////////////////////////////////////////////////////////////////////////
-
-entity
-  : attr?
-    (variant='fsm' | variant='network' | variant='verbatim' 'entity') ident '{'
-      (ent)*
-    '}'
+entity_keyword
+  : 'fsm'
+  | 'network'
+  | 'verbatim' 'entity'
   ;
 
-///////////////////////////////////////////////////////////////////////////////
-// Entity contents
-///////////////////////////////////////////////////////////////////////////////
-
-ent
-  : decl                                                          # EntDecl
-  | defn                                                          # EntDefn
-  | (attr? autoinst='new')? entity                                # EntEntity
-  | attr? ident eqsign='=' 'new' ident '(' param_assigns ')' ';'  # EntInstance
-  | lhs=expr '->' rhs+=expr (',' rhs+=expr)* ';'                  # EntConnect
-  | 'fence' block                                                 # EntFenceBlock
-  | attr? 'void' ident '(' ')' block                              # EntFunction
-  | 'verbatim' IDENTIFIER VERBATIM_BODY                           # EntVerbatimBlock
-  | generate                                                      # EntGen
-  ;
-
-param_assigns : (IDENTIFIER '=' expr (','  IDENTIFIER '=' expr)*)? ;
-
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 // Gen constructs
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
-generate : 'gen' gen ;
+gen : 'gen' generate ;
 
-gen
+generate
   : 'if' '(' thenCond=expr ')' '{' thenItems=genitems '}'
     ('else' 'if' '(' elifCond+=expr ')' '{' elifItems+=genitems '}')*
     ('else' '{' elseItems=genitems '}')?                                    # GenIf
-  | 'for' '(' loop_init? ';' expr? ';' for_steps? ')' '{' genitems '}'      # GenFor
-  | 'for' '(' kind IDENTIFIER op=('<' | '<=')  expr ')' '{' genitems '}'    # GenRange
+  | 'for' '(' ginits ';' expr ';' lsteps ')' '{' genitems '}'               # GenFor
+  | 'for' '(' expr IDENTIFIER op=('<' | '<=')  expr ')' '{' genitems '}'    # GenRange
   ;
 
 genitems : genitem* ;
-
 genitem
-  : generate        # GenItemGen
-  | decl            # GenItemDecl
-  | defn            # GenItemDefn
-  | statement       # GenItemStmt
-  | case_clause     # GenItemCase
-  | ent             # GenItemEnt
+  : gen     # GenItemGen
+  | decl    # GenItemDecl
+  | stmt    # GenItemStmt
+  | kase    # GenItemCase
+  | ent     # GenItemEnt
+  | rec     # GenItemRec
   ;
 
-///////////////////////////////////////////////////////////////////////////////
+ginits : ginit (',' ginit)* ;
+ginit : expr IDENTIFIER point='=' expr ;
+
+////////////////////////////////////////////////////////////////////////////////
+// File contents
+////////////////////////////////////////////////////////////////////////////////
+
+
+riz
+  : decl    # RizDecl
+  ;
+
+////////////////////////////////////////////////////////////////////////////////
+// Entity contents
+////////////////////////////////////////////////////////////////////////////////
+
+ent
+  : decl                                                # EntDecl
+  | gen                                                 # EntGen
+  | lhs=expr point='->' rhs+=expr (',' rhs+=expr)* ';'  # EntConnect
+  | 'fence' '{' stmt* '}'                               # EntFenceBlock
+  | 'verbatim' IDENTIFIER VERBATIM_BODY                 # EntVerbatimBlock
+  ;
+
+////////////////////////////////////////////////////////////////////////////////
+// Record contents
+////////////////////////////////////////////////////////////////////////////////
+
+rec
+  : decl    # RecDecl
+  | gen     # RecGen
+  ;
+
+////////////////////////////////////////////////////////////////////////////////
 // Statements
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
-block
-  : '{' statement* '}'
+stmt
+  : decl                                                        # StmtDecl
+  | gen                                                         # StmtGen
+  | '{' stmt* '}'                                               # StmtBlock
+  | 'if' '(' expr ')' thenStmt=stmt ('else' elseStmt=stmt)?     # StmtIf
+  | 'case' '(' expr ')' '{' kase* '}'                           # StmtCase
+  | 'loop' '{' stmt* '}'                                        # StmtLoop
+  | 'do' '{' stmt* '}' 'while' '(' expr ')' ';'                 # StmtDo
+  | 'while' '(' expr ')' '{' stmt* '}'                          # StmtWhile
+  | 'for' '(' linits?  ';' expr? ';' lsteps? ')' '{' stmt* '}'  # StmtFor
+  | 'let' '(' linits ')' stmt                                   # StmtLet
+  | 'fence' ';'                                                 # StmtFence
+  | 'break' ';'                                                 # StmtBreak
+  | 'continue' ';'                                              # StmtContinue
+  | 'goto' ident ';'                                            # StmtGoto
+  | 'return' ';'                                                # StmtReturn
+  | expr point='=' expr ';'                                     # StmtAssign
+  | expr ASSIGNOP expr ';'                                      # StmtUpdate
+  | expr op=('++'|'--') ';'                                     # StmtPost
+  | expr ';'                                                    # StmtExpr
   ;
 
-statement
-  : block                                                               # StmtBlock
-  | 'if' '(' expr ')' thenStmt=statement ('else' elseStmt=statement)?   # StmtIf
-  | 'case' '(' expr ')' '{' case_clause+ '}'                            # StmtCase
-  | let loop                                                            # StmtLet
-  | loop                                                                # StatementLoop
-  | 'goto' ident ';'                                                    # StmtGoto
-  | 'fence' ';'                                                         # StmtFence
-  | 'break' ';'                                                         # StmtBreak
-  | 'continue' ';'                                                      # StmtContinue
-  | 'return' ';'                                                        # StmtReturn
-  | decl                                                                # StmtDecl
-  | assignment ';'                                                      # StatementAssignment
-  | expr ';'                                                            # StmtExpr
-  | generate                                                            # StmtGen
+kase
+  : gen                         # CaseGen
+  | expr (',' expr)* ':' stmt   # CaseRegular
+  | 'default' ':' stmt          # CaseDefault
   ;
 
-loop
-  : 'loop' block                                                   # StmtLoop
-  | 'do' block 'while' '(' expr ')' ';'                            # StmtDo
-  | 'while' '(' expr ')' block                                     # StmtWhile
-  | 'for' '(' loop_init?  ';' expr? ';' for_steps? ')' block       # StmtFor
+linits : linit (',' linit)* ;
+linit
+  : expr point='=' expr             # LoopInitAssign
+  | expr IDENTIFIER point='=' expr  # LoopInitDecl
   ;
 
-let
-  : 'let' '(' loop_init ')'
+lsteps : lstep (',' lstep)* ;
+lstep
+  : expr point='=' expr # LoopStepAssign
+  | expr ASSIGNOP expr  # LoopStepUpdate
+  | expr op=('++'|'--') # LoopStepPost
   ;
 
-case_clause
-  : commaexpr ':' statement # CaseRegular
-  | 'default' ':' statement # CaseDefault
-  | generate                # CaseGen
-  ;
-
-assignment
-  : expr op='=' expr    # StmtAssign
-  | expr ASSIGNOP expr  # StmtUpdate
-  | expr op=('++'|'--') # StmtPost
-  ;
-
-loop_init
-  : loop_init_item (',' loop_init_item)*
-  ;
-
-loop_init_item
-  : expr '=' expr             # LoopInitAssign
-  | kind IDENTIFIER '=' expr  # LoopInitDecl
-  ;
-
-for_steps
-  : step+=assignment (',' step+=assignment)*
-  ;
-
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 // Expressions
-///////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 
 expr
   : '(' expr ')'                                                # ExprBracket
   // Literals
-  | 'true'                                                      # ExprTrue
-  | 'false'                                                     # ExprFalse
-  | sign=('+' | '-')? SIZEDINT                                  # ExprSizedInt
-  | sign=('+' | '-')? UNSIZEDINT                                # ExprUnsizedInt
-  | STRING                                                      # ExprString
+  | 'true'                                                      # ExprLitTrue
+  | 'false'                                                     # ExprLitFalse
+  | sign=('+' | '-')? SIZEDINT                                  # ExprLitSizedInt
+  | sign=('+' | '-')? UNSIZEDINT                                # ExprLitUnsizedInt
+  | STRING                                                      # ExprLitString
+  // Primitive types
+  | 'bool'                                                      # ExprTypeBool
+  | INTTYPE                                                     # ExprTypeSInt
+  | UINTTYPE                                                    # ExprTypeUInt
+  | 'int'                                                       # ExprTypeSNum
+  | 'uint'                                                      # ExprTypeUNum
+  | 'void'                                                      # ExprTypeVoid
   // Names
   | ident                                                       # ExprIdent
   | ATID                                                        # ExprAtid
   | DOLLARID                                                    # ExprDollarid
   // Call
-  | expr '(' commaexpr? ')'                                     # ExprCall
+  | expr '(' args? ')'                                          # ExprCall
   // Index/Slice
   | expr '[' idx=expr ']'                                       # ExprIndex
   | expr '[' lidx=expr op=(':' | '-:' | '+:') ridx=expr ']'     # ExprSlice
@@ -245,17 +219,12 @@ expr
   | expr op='&&' expr                                           # ExprBinary
   | expr op='||' expr                                           # ExprBinary
   |<assoc=right> expr op='?' expr ':' expr                      # ExprTernary
-  | '{' expr '{' commaexpr '}' '}'                              # ExprRep
-  | '{' commaexpr '}'                                           # ExprCat
-  // Type
-  | kind                                                        # ExprType
+  | '{' expr s='{' expr (',' expr)* e='}' '}'                   # ExprRep
+  | '{' expr (',' expr)* '}'                                    # ExprCat
   ;
 
-commaexpr: expr (',' expr)* ;
-
-///////////////////////////////////////////////////////////////////////////////
-// Attributes
-///////////////////////////////////////////////////////////////////////////////
-
-attr: '(*' attrspec (',' attrspec)* '*)' ;
-attrspec: IDENTIFIER ('=' expr)? ;
+args : arg (',' arg)* ;
+arg
+  : IDENTIFIER point='=' expr   # ArgNamed
+  | expr                        # ArgPositional
+  ;

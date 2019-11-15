@@ -21,15 +21,16 @@ import com.argondesign.alogic.ast.Trees._
 
 trait Output { this: CompilerContext =>
 
-  private implicit val implicitThis = this
+  private implicit val implicitThis: CompilerContext = this
 
-  def getEntityWriter(entity: Entity, suffix: String): Writer = {
-    settings.entityWriterFactory(entity, suffix)
+  def getOutputWriter(entity: Decl, suffix: String): Writer = {
+    settings.outputWriterFactory(entity, suffix)
   }
 
-  def dumpEntity(entity: Entity, suffix: String): Unit = {
-    val writer = getEntityWriter(entity, suffix + ".alogic")
-    writer.write(entity.toSource)
+  def dump(decl: Decl, suffix: String): Unit = {
+    val writer = getOutputWriter(decl, suffix + ".alogic")
+    writer.write(decl.toSource)
+    writer.write("\n")
     writer.close()
   }
 }

@@ -22,7 +22,6 @@ import com.argondesign.alogic.SourceTextConverters._
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Error
-import com.argondesign.alogic.typer.Typer
 import com.argondesign.alogic.util.unreachable
 import org.scalatest.FreeSpec
 
@@ -31,31 +30,23 @@ final class PortCheckBSpec extends FreeSpec with AlogicTest {
   implicit val cc = new CompilerContext
 
   def xform(trees: Tree*): Unit = {
-    val entities = trees map {
-      _ match {
-        case Root(_, entity: Entity) => entity
-        case entity: Entity          => entity
-        case _                       => unreachable
-      }
+    val decls = trees flatMap {
+      case root: Root => root.decls
+      case decl: Decl => List(decl)
+      case _          => unreachable
     }
 
-    cc.addGlobalEntities(entities)
+    cc.addGlobalDecls(decls)
 
     val passes: List[Pass] = List(
-      Checker,
       Namer,
-      // Specialize,
-      ResolveDictPorts,
-      Typer(externalRefs = false),
-      Typer(externalRefs = true),
-      PortCheckA,
+      TypeCheck,
       ReplaceUnaryTicks,
       ResolvePolyFunc,
       AddCasts,
-      FoldTypeRefs,
       Desugar,
-      FoldExprInTypes,
       InlineUnsizedConst,
+      FoldTypeAliases,
       FoldExpr(foldRefs = false),
       PortCheckB
     )
@@ -63,7 +54,6 @@ final class PortCheckBSpec extends FreeSpec with AlogicTest {
     passes.foldLeft(trees.toList) { (t, pass) =>
       pass(t)
     }
-
   }
 
   "PortCheckB should" - {

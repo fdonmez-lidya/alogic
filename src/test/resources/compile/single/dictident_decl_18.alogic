@@ -7,5 +7,5 @@ network dictident_decl_18 {
   i#[0] -> o#[0];
   i#[1] -> o#[1];
 }
-// :4: WARNING: Input port 'i#\[2\]' is unused after processing 'gen' constructs
-// :5: WARNING: Output port 'o#\[2\]' is unused after processing 'gen' constructs
+// :4: WARNING: Input port 'i#\[2\]' is unused
+// :5: WARNING: Output port 'o#\[2\]' is unused

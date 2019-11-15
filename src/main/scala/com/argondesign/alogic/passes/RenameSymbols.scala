@@ -18,7 +18,7 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
-import com.argondesign.alogic.core.Symbols.TermSymbol
+import com.argondesign.alogic.core.Symbols.Symbol
 import com.argondesign.alogic.core.Types._
 import com.argondesign.alogic.util.SequenceNumbers
 
@@ -27,25 +27,24 @@ import scala.collection.mutable
 final class RenameSymbols(implicit cc: CompilerContext) extends TreeTransformer {
 
   override protected def skip(tree: Tree): Boolean = tree match {
-    case _: Entity      => false
-    case _: EntDecl     => false
-    case _: EntInstance => false
-    case _              => true
+    case _: Decl       => false
+    case _: DescEntity => false
+    case _             => true
   }
 
-  private[this] val nameMap = mutable.Map[String, List[TermSymbol]]() withDefaultValue Nil
+  private[this] val nameMap = mutable.Map[String, List[Symbol]]() withDefaultValue Nil
 
   override def enter(tree: Tree): Unit = tree match {
-    case EntDecl(Decl(symbol, _)) => nameMap(symbol.name) ::= symbol
-
-    case EntInstance(Sym(symbol: TermSymbol, _), _, _, _) => nameMap(symbol.name) ::= symbol
-
+    case desc: DescEntity =>
+      desc.decls foreach { decl =>
+        nameMap(decl.symbol.name) ::= decl.symbol
+      }
     case _ => ()
   }
 
   override def transform(tree: Tree): Tree = {
     tree match {
-      case entity: Entity => {
+      case Decl(Sym(eSymbol, _), _: DescEntity) =>
         // Rename symbol with the same name
         for ((name, symbols) <- nameMap if symbols.size > 1) {
           // Sort by location, but first reverse so identical locations come
@@ -61,7 +60,7 @@ final class RenameSymbols(implicit cc: CompilerContext) extends TreeTransformer 
               case _: TypeIn          => name
               case _: TypeOut         => name
               case _: TypeConst       => name
-              case _ if addLineNumber => s"${name}${cc.sep}l${symbol.loc.line}"
+              case _ if addLineNumber => s"$name${cc.sep}l${symbol.loc.line}"
               case _                  => name
             }
           }
@@ -71,22 +70,21 @@ final class RenameSymbols(implicit cc: CompilerContext) extends TreeTransformer 
           for ((symbol, newName) <- sortedSymbols lazyZip newNames) {
             // Ensure uniqueness, even if defined on the same line
             val finalName = if (newNames.count(_ == newName) > 1) {
-              s"${newName}${cc.sep}${seq.next}"
+              s"$newName${cc.sep}${seq.next}"
             } else {
               newName
             }
 
-            symbol rename finalName
+            symbol.name = finalName
           }
         }
 
         // Add entity prefix
         val ep = cc.settings.ensurePrefix
         val prefix = (0 to ep.length) collectFirst {
-          case n if entitySymbol.name startsWith ep.drop(n) => ep.take(n)
+          case n if eSymbol.name startsWith ep.drop(n) => ep.take(n)
         }
-        entitySymbol rename (prefix.get + entitySymbol.name)
-      }
+        eSymbol.name = prefix.get + eSymbol.name
 
       case _ => ()
     }

@@ -29,51 +29,50 @@ final class SplitStructsA(implicit cc: CompilerContext) extends TreeTransformer 
 
   private[this] val fieldIndexStack = mutable.Stack[Int]()
 
-  private[this] def flattenStruct(prefix: String, kind: TypeStruct): List[(String, Type)] = {
-    kind.fields flatMap {
-      case (fName, fKind) =>
-        fKind match {
-          case k: TypeStruct => flattenStruct(s"${prefix}${cc.sep}${fName}", k)
-          case other         => List((s"${prefix}${cc.sep}${fName}", other))
-        }
+  private[this] def flattenStruct(prefix: String, kind: TypeRecord): List[(String, TypeFund)] = {
+    kind.publicSymbols flatMap { symbol =>
+      symbol.kind match {
+        case k: TypeRecord   => flattenStruct(s"$prefix${cc.sep}${symbol.name}", k)
+        case other: TypeFund => List((s"$prefix${cc.sep}${symbol.name}", other))
+        case _               => ???
+      }
     }
   }
 
-  override def enter(tree: Tree) = tree match {
-    case entity: Entity => {
-      if (!entity.symbol.attr.highLevelKind.isSet) {
-        cc.ice(s"Missing highLevelKind attribute on entity ${entity.symbol.name}")
+  override def enter(tree: Tree): Unit = tree match {
+    case Decl(Sym(eSymbol, _), desc: DescEntity) =>
+      if (!eSymbol.attr.highLevelKind.isSet) {
+        cc.ice(eSymbol, s"Missing highLevelKind attribute on entity ${eSymbol.name}")
       }
 
-      for (Decl(symbol, _) <- entity.declarations) {
-        val oKind = symbol.kind
-        oKind.underlying match {
-          case struct: TypeStruct => {
+      for (Decl(Sym(symbol, _), _) <- desc.decls) {
+        symbol.kind.underlying match {
+          case struct: TypeRecord =>
             val newSymbols = for ((fName, fKind) <- flattenStruct(symbol.name, struct)) yield {
-              val nKind = oKind match {
+              val nKind = symbol.kind match {
                 case k: TypeIn     => k.copy(kind = fKind)
                 case k: TypeOut    => k.copy(kind = fKind)
                 case k: TypeConst  => k.copy(kind = fKind)
-                case _: TypeStruct => fKind
+                case _: TypeRecord => fKind
                 case _             => unreachable
               }
-              cc.newTermSymbol(fName, symbol.loc, nKind)
+              cc.newSymbol(fName, symbol.loc) tap { _.kind = nKind }
             }
             val widths = newSymbols map { _.kind.width }
-            val offsets = widths.scanLeft(0)(_ + _)
+            val offsets = widths.scanLeft(BigInt(0))(_ + _)
+            // TODO: rewrite with loop() ...
             for ((newSymbol, offset) <- newSymbols zip offsets) {
-              newSymbol.attr.fieldOffset set offset
+              newSymbol.attr.fieldOffset set offset.toInt
               newSymbol.attr.structSymbol set symbol
             }
             symbol.attr.fieldSymbols set newSymbols
-          }
           case _ => ()
         }
       }
 
       // Transfer the oReg attributes
       for {
-        Decl(symbol, _) <- entity.declarations
+        Decl(Sym(symbol, _), _) <- desc.decls
         if symbol.attr.fieldSymbols.isSet
         rSymbol <- symbol.attr.oReg.get
       } {
@@ -83,36 +82,33 @@ final class SplitStructsA(implicit cc: CompilerContext) extends TreeTransformer 
           oFieldSymbol.attr.oReg set rFieldSymbol
         }
       }
-    }
 
-    case ExprSelect(expr, sel, _) => {
+    case ExprSelect(expr, sel, _) =>
       expr.tpe.underlying match {
-        case kind: TypeStruct => fieldIndexStack.push(kind.fieldNames.takeWhile(_ != sel).length)
-        case _                => fieldIndexStack.push(-1)
+        case kind: TypeRecord => fieldIndexStack push kind.publicSymbols.indexWhere(_.name == sel)
+        case _                => fieldIndexStack push -1
       }
-    }
 
     case _ => ()
   }
 
-  private[this] def fieldDecls(fSymbols: List[TermSymbol], initOpt: Option[Expr]): List[EntDecl] = {
+  private[this] def fieldDecls(fSymbols: List[Symbol], initOpt: Option[Expr]): List[EntDecl] = {
     initOpt match {
-      case Some(init) => {
+      case Some(init) =>
         val widths = fSymbols map { _.kind.width }
-        val lsbs = widths.scanRight(0)(_ + _).tail
-        val t = for ((symbol, lsb, width) <- fSymbols lazyZip lsbs lazyZip widths) yield {
-          val msb = lsb + width - 1
-          val expr = ExprSlice(init, Expr(msb), ":", Expr(lsb)) regularize init.loc
-          // TODO: teach simplify to simplify more things as necesary
-          EntDecl(Decl(symbol, Some(expr.simplify)))
+        val lsbs = widths.scanRight(BigInt(0))(_ + _).tail
+        List from {
+          for ((symbol, lsb, width) <- fSymbols lazyZip lsbs lazyZip widths) yield {
+            val msb = lsb + width - 1
+            val expr = ExprSlice(init, Expr(msb), ":", Expr(lsb)) regularize init.loc
+            // TODO: teach simplify to simplify more things as necessary
+            EntDecl(symbol.decl(expr.simplify))
+          }
         }
-        t.toList
-      }
-      case None => {
-        for (symbol <- fSymbols) yield {
-          EntDecl(Decl(symbol, None))
+      case None =>
+        fSymbols map { symbol =>
+          EntDecl(symbol.decl)
         }
-      }
     }
   }
 
@@ -123,24 +119,22 @@ final class SplitStructsA(implicit cc: CompilerContext) extends TreeTransformer 
       // ExprSym
       //////////////////////////////////////////////////////////////////////////
 
-      case ExprSym(symbol) => {
+      case ExprSym(symbol) =>
         // Rewrite reference to struct symbol as a nested
         // concatenation of references to the field symbols
         symbol.attr.fieldSymbols.get map { fSymbols =>
-          val it = fSymbols.iterator
-          def cat(struct: TypeStruct): ExprCat = ExprCat {
-            for (fType <- struct.fieldTypes) yield {
-              fType match {
-                case struct: TypeStruct => cat(struct)
+          def cat(struct: TypeRecord)(implicit it: Iterator[Symbol]): ExprCat = ExprCat {
+            for (symbol <- struct.publicSymbols) yield {
+              symbol.kind match {
+                case struct: TypeRecord => cat(struct)
                 case _                  => ExprSym(it.next())
               }
             }
           }
-          cat(symbol.kind.underlying.asInstanceOf[TypeStruct])
+          cat(symbol.kind.underlying.asRecord)(fSymbols.iterator)
         } getOrElse {
           tree
         }
-      }
 
       //////////////////////////////////////////////////////////////////////////
       // ExprSelect
@@ -160,13 +154,22 @@ final class SplitStructsA(implicit cc: CompilerContext) extends TreeTransformer 
       }
 
       //////////////////////////////////////////////////////////////////////////
+      // Drop all record definitions
+      //////////////////////////////////////////////////////////////////////////
+
+      case RizDecl(Decl(_, _: DescRecord))  => Thicket(Nil) regularize tree.loc
+      case EntDecl(Decl(_, _: DescRecord))  => Thicket(Nil) regularize tree.loc
+      case RecDecl(Decl(_, _: DescRecord))  => Thicket(Nil) regularize tree.loc
+      case StmtDecl(Decl(_, _: DescRecord)) => Thicket(Nil) regularize tree.loc
+
+      //////////////////////////////////////////////////////////////////////////
       // Decl
       //////////////////////////////////////////////////////////////////////////
 
-      case decl @ EntDecl(Decl(symbol, init)) => {
+      case decl @ EntDecl(Decl(Sym(symbol, _), desc)) =>
         // Add field declarations
         symbol.attr.fieldSymbols.get map { fSymbols =>
-          val fDecls = fieldDecls(fSymbols, init)
+          val fDecls = fieldDecls(fSymbols, desc.initializer)
           // Keep original declarations of ports. These are used to resolve
           // inter-entity connections in a second pass
           symbol.kind match {
@@ -177,27 +180,10 @@ final class SplitStructsA(implicit cc: CompilerContext) extends TreeTransformer 
         } getOrElse {
           tree
         }
-      }
 
       //////////////////////////////////////////////////////////////////////////
       // Entity
       //////////////////////////////////////////////////////////////////////////
-
-      case entity: Entity => {
-        // Update type of entity with new ports.
-        val portSymbols = entity.declarations collect {
-          case Decl(symbol, _) if symbol.kind.isInstanceOf[TypeIn]  => symbol
-          case Decl(symbol, _) if symbol.kind.isInstanceOf[TypeOut] => symbol
-        }
-
-        val newKind = entitySymbol.kind match {
-          case kind: TypeEntity => kind.copy(portSymbols = portSymbols)
-          case _                => unreachable
-        }
-        entitySymbol.kind = newKind
-
-        tree
-      }
 
       case _ => tree
     }

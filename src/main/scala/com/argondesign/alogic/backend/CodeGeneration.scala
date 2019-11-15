@@ -17,7 +17,7 @@ package com.argondesign.alogic.backend
 
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
-import com.argondesign.alogic.core.Symbols.TypeSymbol
+import com.argondesign.alogic.core.Symbols.Symbol
 import com.argondesign.alogic.passes.Pass
 
 import scala.collection.parallel.CollectionConverters._
@@ -30,20 +30,19 @@ object CodeGeneration extends Pass {
     // passing the resulting map as a by name argument to EntityDetails itself,
     // this way EntityDetails can use details of other entities to figure out
     // their own details.
-    lazy val entityDetails: Map[TypeSymbol, EntityDetails] = {
-      val pairs = for (tree <- trees) yield {
-        val entity = tree.asInstanceOf[Entity]
+    lazy val entityDetails: Map[Symbol, EntityDetails] = Map from {
+      for (tree <- trees) yield {
+        val entity = tree.asInstanceOf[Decl]
         val details = new EntityDetails(entity, entityDetails)
         entity.symbol -> details
       }
-      pairs.toMap
     }
 
     // Generate code in parallel
     entityDetails.values.par foreach { details =>
       val verilog = new MakeVerilog(details, entityDetails).moduleSource
 
-      val writer = cc.getEntityWriter(details.entity, ".v")
+      val writer = cc.getOutputWriter(details.entity, ".v")
       writer.write(cc.settings.header)
       writer.write(verilog)
       writer.close()

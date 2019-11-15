@@ -28,41 +28,35 @@ import scala.collection.mutable
 
 final class DefaultAssignments(implicit cc: CompilerContext) extends TreeTransformer {
 
-  private val needsDefault = mutable.Set[TermSymbol]()
+  private val needsDefault = mutable.Set[Symbol]()
 
   override def skip(tree: Tree): Boolean = tree match {
-    case entity: Entity => entity.combProcesses.isEmpty
-    case _              => false
+    case Decl(_, desc: DescEntity) => desc.combProcesses.isEmpty
+    case _                         => false
   }
 
   override def enter(tree: Tree): Unit = tree match {
-    case Decl(symbol, _) if symbol.kind.isIn || symbol.kind.isConst => ()
-
-    case Decl(symbol, _) if !symbol.attr.flop.isSet && !symbol.attr.memory.isSet => {
+    case Decl(Sym(symbol, _), _: DescVar | _: DescOut) if !symbol.attr.flop.isSet =>
       needsDefault += symbol
-    }
-
     case _ => ()
   }
 
   override def transform(tree: Tree): Tree = tree match {
-    case entity: Entity if needsDefault.nonEmpty => {
+    case desc: DescEntity if needsDefault.nonEmpty =>
       // Remove any nets driven through a connect
-      for (EntConnect(_, List(rhs)) <- entity.connects) {
+      for (EntConnect(_, List(rhs)) <- desc.connects) {
         rhs.visit {
-          case ExprSym(symbol: TermSymbol) => {
-            needsDefault remove symbol
-          }
+          case ExprSym(symbol) => needsDefault remove symbol
         }
       }
 
       // Remove symbols that are dead at the beginning of the cycle. To do
       // this, we build the case statement representing the state dispatch
       // (together with the fence statements), and do liveness analysis on it
-      lazy val (liveSymbolBits, deadSymbolBits) = Liveness(entity.combProcesses(0).stmts)
+      lazy val (liveSymbolBits, deadSymbolBits) = Liveness(desc.combProcesses(0).stmts)
 
       if (needsDefault.nonEmpty) {
-        assert(entity.combProcesses.lengthIs == 1)
+        assert(desc.combProcesses.lengthIs == 1)
 
         val deadSymbols = {
           // Keep only the symbols with all bits dead
@@ -88,10 +82,10 @@ final class DefaultAssignments(implicit cc: CompilerContext) extends TreeTransfo
           val liveSymbols = liveSymbolBits.underlying.keySet
 
           val symbolsDrivingConnect = Set from {
-            entity.connects.iterator flatMap {
+            desc.connects.iterator flatMap {
               case EntConnect(lhs, _) =>
                 lhs.collect {
-                  case ExprSym(symbol: TermSymbol) => symbol.attr.flop.getOrElse(symbol)
+                  case ExprSym(symbol) => symbol.attr.flop.getOrElse(symbol)
                 }
             }
           }
@@ -100,29 +94,28 @@ final class DefaultAssignments(implicit cc: CompilerContext) extends TreeTransfo
         }
 
         val leading = for {
-          Decl(symbol, _) <- entity.declarations
+          Decl(Sym(symbol, _), _) <- desc.decls
           if needsDefault contains symbol
         } yield {
           val init = if ((initializeToRegisteredVal contains symbol) && symbol.attr.default.isSet) {
             symbol.attr.default.value
           } else {
             val kind = symbol.kind
-            ExprInt(kind.isSigned, kind.width, 0)
+            ExprInt(kind.isSigned, kind.width.toInt, 0)
           }
           StmtAssign(ExprSym(symbol), init) regularize symbol.loc
         }
 
-        val newBody = entity.body map {
+        val newBody = desc.body map {
           case ent @ EntCombProcess(stmts) =>
             TypeAssigner(EntCombProcess(leading ::: stmts) withLoc ent.loc)
           case other => other
         }
 
         TypeAssigner {
-          entity.copy(body = newBody) withLoc tree.loc
+          desc.copy(body = newBody) withLoc tree.loc
         }
       }
-    }
 
     case _ => tree
   }

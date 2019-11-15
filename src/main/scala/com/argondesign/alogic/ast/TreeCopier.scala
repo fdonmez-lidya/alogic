@@ -10,12 +10,12 @@
 //
 // DESCRIPTION:
 //
-// A copy on write Tree copier used in tree transformations
+// Tree copier used in tree transformations to only perform copying if required
 ////////////////////////////////////////////////////////////////////////////////
 
 package com.argondesign.alogic.ast
 
-import Trees._
+import com.argondesign.alogic.ast.Trees._
 
 // scalastyle:off token
 
@@ -25,19 +25,24 @@ import Trees._
 // recursively in TreeTransformer
 object TreeCopier {
 
-  final def apply(tree: Root)(typeDefinitions: List[Tree], entity: Tree): Root = {
-    if ((typeDefinitions eq tree.defs) && (entity eq tree.entity)) {
+  //////////////////////////////////////////////////////////////////////////////
+  // Root
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: Root)(body: List[Tree]): Root = {
+    if (body eq tree.body) {
       tree
     } else {
-      assert(typeDefinitions forall { _.isInstanceOf[Definition] })
-      Root(
-        typeDefinitions.asInstanceOf[List[Definition]],
-        entity.asInstanceOf[Entity]
-      ) withLoc tree.loc
+      assert(body forall { _.isInstanceOf[Riz] })
+      Root(body.asInstanceOf[List[Riz]]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: Ident)(indices: List[Tree]): Ident = {
+  //////////////////////////////////////////////////////////////////////////////
+  // Ref
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: Ident)(indices: List[Tree]): Ident = {
     if (indices eq tree.idxs) {
       tree
     } else {
@@ -46,7 +51,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: Sym)(indices: List[Tree]): Sym = {
+  def apply(tree: Sym)(indices: List[Tree]): Sym = {
     if (indices eq tree.idxs) {
       tree
     } else {
@@ -55,141 +60,194 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: DefnRef)(ref: Tree): DefnRef = {
-    if (ref eq tree.ref) {
+  //////////////////////////////////////////////////////////////////////////////
+  // Decl
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: Decl)(ref: Tree, desc: Tree): Decl = {
+    if ((ref eq tree.ref) && (desc eq tree.desc)) {
       tree
     } else {
-      DefnRef(ref.asInstanceOf[Ref], tree.kind) withLoc tree.loc
+      Decl(ref.asInstanceOf[Ref], desc.asInstanceOf[Desc]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: DeclRef)(ref: Tree, init: Option[Tree]): DeclRef = {
-    if ((ref eq tree.ref) && (tree.init eq init)) {
+  //////////////////////////////////////////////////////////////////////////////
+  // Desc
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: DescVar)(spec: Tree, initOpt: Option[Tree]): DescVar = {
+    if ((spec eq tree.spec) && (initOpt eq tree.initOpt)) {
       tree
     } else {
-      assert(init forall { _.isInstanceOf[Expr] })
-      DeclRef(ref.asInstanceOf[Ref], tree.kind, init.asInstanceOf[Option[Expr]]) withLoc tree.loc
+      assert(initOpt forall { _.isInstanceOf[Expr] })
+      DescVar(spec.asInstanceOf[Expr], initOpt.asInstanceOf[Option[Expr]]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: Decl)(init: Option[Tree]): Decl = {
-    if (tree.init eq init) {
+  def apply(tree: DescIn)(spec: Tree): DescIn = {
+    if (spec eq tree.spec) {
       tree
     } else {
-      assert(init forall { _.isInstanceOf[Expr] })
-      Decl(tree.symbol, init.asInstanceOf[Option[Expr]]) withLoc tree.loc
+      tree.copy(spec = spec.asInstanceOf[Expr]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: Entity)(ref: Tree, body: List[Tree]): Entity = {
-    if ((ref eq tree.ref) && (body eq tree.body)) {
+  def apply(tree: DescOut)(spec: Tree, initOpt: Option[Tree]): DescOut = {
+    if ((spec eq tree.spec) && (initOpt eq tree.initOpt)) {
       tree
     } else {
-      assert(body forall { _.isInstanceOf[Ent] })
-      Entity(ref.asInstanceOf[Ref], body.asInstanceOf[List[Ent]]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: EntDecl)(decl: Tree): EntDecl = {
-    if (decl eq tree.decl) {
-      tree
-    } else {
-      EntDecl(decl.asInstanceOf[Declaration]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: EntDefn)(defn: Tree): EntDefn = {
-    if (defn eq tree.defn) {
-      tree
-    } else {
-      EntDefn(defn.asInstanceOf[Definition]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: EntEntity)(entity: Tree): EntEntity = {
-    if (entity eq tree.entity) {
-      tree
-    } else {
-      EntEntity(entity.asInstanceOf[Entity]) withLoc tree.loc
-    }
-  }
-
-  final def apply(
-      tree: EntInstance)(ref: Tree, module: Tree, paramExprs: List[Tree]): EntInstance = {
-    if ((ref eq tree.instance) && (module eq tree.entity) && (paramExprs eq tree.paramExprs)) {
-      tree
-    } else {
-      assert(paramExprs forall { _.isInstanceOf[Expr] })
-      EntInstance(
-        ref.asInstanceOf[Ref],
-        module.asInstanceOf[Ref],
-        tree.paramNames,
-        paramExprs.asInstanceOf[List[Expr]]
+      assert(initOpt forall { _.isInstanceOf[Expr] })
+      tree.copy(
+        spec = spec.asInstanceOf[Expr],
+        initOpt = initOpt.asInstanceOf[Option[Expr]]
       ) withLoc tree.loc
     }
   }
 
-  final def apply(tree: EntConnect)(lhs: Tree, rhs: List[Tree]): EntConnect = {
-    if ((lhs eq tree.lhs) && (rhs eq tree.rhs)) {
+  def apply(tree: DescPipeline)(spec: Tree): DescPipeline = {
+    if (spec eq tree.spec) {
       tree
     } else {
-      assert(rhs forall { _.isInstanceOf[Expr] })
-      EntConnect(lhs.asInstanceOf[Expr], rhs.asInstanceOf[List[Expr]]) withLoc tree.loc
+      DescPipeline(spec.asInstanceOf[Expr]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: EntFunction)(ref: Tree, body: List[Tree]): EntFunction = {
-    if ((ref eq tree.ref) && (body eq tree.stmts)) {
+  def apply(tree: DescParam)(spec: Tree, initOpt: Option[Tree]): DescParam = {
+    if ((spec eq tree.spec) && (initOpt eq tree.initOpt)) {
+      tree
+    } else {
+      assert(initOpt forall { _.isInstanceOf[Expr] })
+      DescParam(
+        spec.asInstanceOf[Expr],
+        initOpt.asInstanceOf[Option[Expr]]
+      ) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescConst)(spec: Tree, init: Tree): DescConst = {
+    if ((spec eq tree.spec) && (init eq tree.init)) {
+      tree
+    } else {
+      DescConst(spec.asInstanceOf[Expr], init.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescGen)(spec: Tree, init: Tree): DescGen = {
+    if ((spec eq tree.spec) && (init eq tree.init)) {
+      tree
+    } else {
+      DescGen(spec.asInstanceOf[Expr], init.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescArray)(elem: Tree, size: Tree): DescArray = {
+    if ((elem eq tree.elem) && (size eq tree.size)) {
+      tree
+    } else {
+      DescArray(elem.asInstanceOf[Expr], size.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescSram)(elem: Tree, size: Tree): DescSram = {
+    if ((elem eq tree.elem) && (size eq tree.size)) {
+      tree
+    } else {
+      tree.copy(
+        elem = elem.asInstanceOf[Expr],
+        size = size.asInstanceOf[Expr]
+      ) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescStack)(elem: Tree, size: Tree): DescStack = {
+    if ((elem eq tree.elem) && (size eq tree.size)) {
+      tree
+    } else {
+      DescStack(elem.asInstanceOf[Expr], size.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescType)(spec: Tree): DescType = {
+    if (spec eq tree.spec) {
+      tree
+    } else {
+      DescType(spec.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescEntity)(body: List[Tree]): DescEntity = {
+    if (body eq tree.body) {
+      tree
+    } else {
+      assert(body forall { _.isInstanceOf[Ent] })
+      tree.copy(body = body.asInstanceOf[List[Ent]]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescRecord)(body: List[Tree]): DescRecord = {
+    if (body eq tree.body) {
+      tree
+    } else {
+      assert(body forall { _.isInstanceOf[Rec] })
+      DescRecord(body.asInstanceOf[List[Rec]]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescInstance)(spec: Tree): DescInstance = {
+    if (spec eq tree.spec) {
+      tree
+    } else {
+      DescInstance(spec.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescSingleton)(body: List[Tree]): DescSingleton = {
+    if (body eq tree.body) {
+      tree
+    } else {
+      assert(body forall { _.isInstanceOf[Ent] })
+      tree.copy(body = body.asInstanceOf[List[Ent]]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescFunc)(ret: Tree, args: List[Tree], body: List[Tree]): DescFunc = {
+    if ((ret eq tree.ret) && (args eq tree.args) && (body eq tree.body)) {
+      tree
+    } else {
+      assert(args forall { _.isInstanceOf[Decl] })
+      assert(body forall { _.isInstanceOf[Stmt] })
+      tree.copy(
+        ret = ret.asInstanceOf[Expr],
+        args = args.asInstanceOf[List[Decl]],
+        body = body.asInstanceOf[List[Stmt]]
+      ) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: DescState)(expr: Tree, body: List[Tree]): DescState = {
+    if ((expr eq tree.expr) && (body eq tree.body)) {
       tree
     } else {
       assert(body forall { _.isInstanceOf[Stmt] })
-      EntFunction(ref.asInstanceOf[Ref], body.asInstanceOf[List[Stmt]]) withLoc tree.loc
+      DescState(expr.asInstanceOf[Expr], body.asInstanceOf[List[Stmt]]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: EntState)(expr: Tree, body: List[Tree]): EntState = {
-    if ((expr eq tree.expr) && (body eq tree.stmts)) {
+  def apply(tree: DescChoice)(choices: List[Tree]): DescChoice = {
+    if (choices eq tree.choices) {
       tree
     } else {
-      assert(body forall { _.isInstanceOf[Stmt] })
-      EntState(expr.asInstanceOf[Expr], body.asInstanceOf[List[Stmt]]) withLoc tree.loc
+      assert(choices forall { _.isInstanceOf[ExprSym] })
+      DescChoice(choices.asInstanceOf[List[ExprSym]]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: EntCombProcess)(stmts: List[Tree]): EntCombProcess = {
-    if (stmts eq tree.stmts) {
-      tree
-    } else {
-      assert(stmts forall { _.isInstanceOf[Stmt] })
-      EntCombProcess(stmts.asInstanceOf[List[StmtIf]]) withLoc tree.loc
-    }
-  }
+  //////////////////////////////////////////////////////////////////////////////
+  // Gen
+  //////////////////////////////////////////////////////////////////////////////
 
-  final def apply(tree: EntGen)(gen: Tree): EntGen = {
-    if (gen eq tree.gen) {
-      tree
-    } else {
-      EntGen(gen.asInstanceOf[Gen]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: GenDecl)(decl: Tree): GenDecl = {
-    if (decl eq tree.decl) {
-      tree
-    } else {
-      GenDecl(decl.asInstanceOf[Declaration]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: GenDefn)(defn: Tree): GenDefn = {
-    if (defn eq tree.defn) {
-      tree
-    } else {
-      GenDefn(defn.asInstanceOf[Definition]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: GenIf)(cond: Tree, thenItems: List[Tree], elseItems: List[Tree]): GenIf = {
+  def apply(tree: GenIf)(cond: Tree, thenItems: List[Tree], elseItems: List[Tree]): GenIf = {
     if ((cond eq tree.cond) && (thenItems eq tree.thenItems) && (elseItems eq tree.elseItems)) {
       tree
     } else {
@@ -201,43 +259,131 @@ object TreeCopier {
     }
   }
 
-  final def apply(
+  def apply(
       tree: GenFor
   )(
-      inits: List[Tree],
-      cond: Option[Tree],
-      step: List[Tree],
+      decls: List[Tree],
+      cond: Tree,
+      steps: List[Tree],
       body: List[Tree]
   ): GenFor = {
-    if ((inits eq tree.inits) && (cond eq tree.cond) && (step eq tree.step) && (body eq tree.body)) {
+    if ((decls eq tree.decls) && (cond eq tree.cond) && (steps eq tree.steps) && (body eq tree.body)) {
       tree
     } else {
-      assert(inits forall { _.isInstanceOf[Stmt] })
-      assert(cond forall { _.isInstanceOf[Expr] })
-      assert(step forall { _.isInstanceOf[Stmt] })
+      assert(decls forall { _.isInstanceOf[Decl] })
+      assert(steps forall { _.isInstanceOf[Stmt] })
       GenFor(
-        inits.asInstanceOf[List[Stmt]],
-        cond.asInstanceOf[Option[Expr]],
-        step.asInstanceOf[List[Stmt]],
+        decls.asInstanceOf[List[Decl]],
+        cond.asInstanceOf[Expr],
+        steps.asInstanceOf[List[Stmt]],
         body
       ) withLoc tree.loc
     }
   }
 
-  final def apply(tree: GenRange)(decl: Tree, end: Tree, body: List[Tree]): GenRange = {
+  def apply(tree: GenRange)(decl: Tree, end: Tree, body: List[Tree]): GenRange = {
     if ((decl eq tree.decl) && (end eq tree.end) && (body eq tree.body)) {
       tree
     } else {
-      GenRange(
-        decl.asInstanceOf[Declaration],
-        tree.op,
-        end.asInstanceOf[Expr],
-        body
+      tree.copy(
+        decl = decl.asInstanceOf[Decl],
+        end = end.asInstanceOf[Expr],
+        body = body
       ) withLoc tree.loc
     }
   }
 
-  final def apply(tree: StmtBlock)(body: List[Tree]): StmtBlock = {
+  //////////////////////////////////////////////////////////////////////////////
+  // Riz
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: RizDecl)(decl: Tree): RizDecl = {
+    if (decl eq tree.decl) {
+      tree
+    } else {
+      RizDecl(decl.asInstanceOf[Decl]) withLoc tree.loc
+    }
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Ent
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: EntDecl)(decl: Tree): EntDecl = {
+    if (decl eq tree.decl) {
+      tree
+    } else {
+      EntDecl(decl.asInstanceOf[Decl]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: EntGen)(gen: Tree): EntGen = {
+    if (gen eq tree.gen) {
+      tree
+    } else {
+      EntGen(gen.asInstanceOf[Gen]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: EntConnect)(lhs: Tree, rhs: List[Tree]): EntConnect = {
+    if ((lhs eq tree.lhs) && (rhs eq tree.rhs)) {
+      tree
+    } else {
+      assert(rhs forall { _.isInstanceOf[Expr] })
+      EntConnect(lhs.asInstanceOf[Expr], rhs.asInstanceOf[List[Expr]]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: EntCombProcess)(stmts: List[Tree]): EntCombProcess = {
+    if (stmts eq tree.stmts) {
+      tree
+    } else {
+      assert(stmts forall { _.isInstanceOf[Stmt] })
+      EntCombProcess(stmts.asInstanceOf[List[StmtIf]]) withLoc tree.loc
+    }
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Rec
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: RecDecl)(decl: Tree): RecDecl = {
+    if (decl eq tree.decl) {
+      tree
+    } else {
+      RecDecl(decl.asInstanceOf[Decl]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: RecGen)(gen: Tree): RecGen = {
+    if (gen eq tree.gen) {
+      tree
+    } else {
+      RecGen(gen.asInstanceOf[Gen]) withLoc tree.loc
+    }
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Stmt
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: StmtDecl)(decl: Tree): StmtDecl = {
+    if (decl eq tree.decl) {
+      tree
+    } else {
+      StmtDecl(decl.asInstanceOf[Decl]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: StmtGen)(gen: Tree): StmtGen = {
+    if (gen eq tree.gen) {
+      tree
+    } else {
+      StmtGen(gen.asInstanceOf[Gen]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: StmtBlock)(body: List[Tree]): StmtBlock = {
     if (body eq tree.body) {
       tree
     } else {
@@ -246,7 +392,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtIf)(
+  def apply(tree: StmtIf)(
       cond: Tree,
       thenStmts: List[Tree],
       elseStmts: List[Tree]
@@ -264,7 +410,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtCase)(expr: Tree, cases: List[Tree]): StmtCase = {
+  def apply(tree: StmtCase)(expr: Tree, cases: List[Tree]): StmtCase = {
     if ((expr eq tree.expr) && (cases eq tree.cases)) {
       tree
     } else {
@@ -276,34 +422,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: CaseRegular)(cond: List[Tree], stmts: List[Tree]): CaseRegular = {
-    if ((cond eq tree.cond) && (stmts eq tree.stmts)) {
-      tree
-    } else {
-      assert(cond forall { _.isInstanceOf[Expr] })
-      assert(stmts forall { _.isInstanceOf[Stmt] })
-      CaseRegular(cond.asInstanceOf[List[Expr]], stmts.asInstanceOf[List[Stmt]]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: CaseDefault)(stmts: List[Tree]): CaseDefault = {
-    if (stmts eq tree.stmts) {
-      tree
-    } else {
-      assert(stmts forall { _.isInstanceOf[Stmt] })
-      CaseDefault(stmts.asInstanceOf[List[Stmt]]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: CaseGen)(gen: Tree): CaseGen = {
-    if (gen eq tree.gen) {
-      tree
-    } else {
-      CaseGen(gen.asInstanceOf[Gen]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: StmtLoop)(body: List[Tree]): StmtLoop = {
+  def apply(tree: StmtLoop)(body: List[Tree]): StmtLoop = {
     if (body eq tree.body) {
       tree
     } else {
@@ -312,7 +431,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtWhile)(cond: Tree, body: List[Tree]): StmtWhile = {
+  def apply(tree: StmtWhile)(cond: Tree, body: List[Tree]): StmtWhile = {
     if ((cond eq tree.cond) && (body eq tree.body)) {
       tree
     } else {
@@ -321,31 +440,31 @@ object TreeCopier {
     }
   }
 
-  final def apply(
+  def apply(
       tree: StmtFor
   )(
       inits: List[Tree],
       cond: Option[Tree],
-      step: List[Tree],
+      steps: List[Tree],
       body: List[Tree]
   ): StmtFor = {
-    if ((inits eq tree.inits) && (cond eq tree.cond) && (step eq tree.step) && (body eq tree.body)) {
+    if ((inits eq tree.inits) && (cond eq tree.cond) && (steps eq tree.steps) && (body eq tree.body)) {
       tree
     } else {
       assert(inits forall { _.isInstanceOf[Stmt] })
       assert(cond forall { _.isInstanceOf[Expr] })
-      assert(step forall { _.isInstanceOf[Stmt] })
+      assert(steps forall { _.isInstanceOf[Stmt] })
       assert(body forall { _.isInstanceOf[Stmt] })
       StmtFor(
         inits.asInstanceOf[List[Stmt]],
         cond.asInstanceOf[Option[Expr]],
-        step.asInstanceOf[List[Stmt]],
+        steps.asInstanceOf[List[Stmt]],
         body.asInstanceOf[List[Stmt]]
       ) withLoc tree.loc
     }
   }
 
-  final def apply(tree: StmtDo)(cond: Tree, body: List[Tree]): StmtDo = {
+  def apply(tree: StmtDo)(cond: Tree, body: List[Tree]): StmtDo = {
     if ((cond eq tree.cond) && (body eq tree.body)) {
       tree
     } else {
@@ -354,7 +473,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtLet)(inits: List[Tree], body: List[Tree]): StmtLet = {
+  def apply(tree: StmtLet)(inits: List[Tree], body: List[Tree]): StmtLet = {
     if ((inits eq tree.inits) && (body eq tree.body)) {
       tree
     } else {
@@ -364,7 +483,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtGoto)(expr: Tree): StmtGoto = {
+  def apply(tree: StmtGoto)(expr: Tree): StmtGoto = {
     if (expr eq tree.expr) {
       tree
     } else {
@@ -372,7 +491,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtAssign)(lhs: Tree, rhs: Tree): StmtAssign = {
+  def apply(tree: StmtAssign)(lhs: Tree, rhs: Tree): StmtAssign = {
     if ((lhs eq tree.lhs) && (rhs eq tree.rhs)) {
       tree
     } else {
@@ -380,7 +499,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtUpdate)(lhs: Tree, rhs: Tree): StmtUpdate = {
+  def apply(tree: StmtUpdate)(lhs: Tree, rhs: Tree): StmtUpdate = {
     if ((lhs eq tree.lhs) && (rhs eq tree.rhs)) {
       tree
     } else {
@@ -388,7 +507,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtPost)(expr: Tree): StmtPost = {
+  def apply(tree: StmtPost)(expr: Tree): StmtPost = {
     if (expr eq tree.expr) {
       tree
     } else {
@@ -396,7 +515,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtExpr)(expr: Tree): StmtExpr = {
+  def apply(tree: StmtExpr)(expr: Tree): StmtExpr = {
     if (expr eq tree.expr) {
       tree
     } else {
@@ -404,15 +523,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtDecl)(decl: Tree): StmtDecl = {
-    if (decl eq tree.decl) {
-      tree
-    } else {
-      StmtDecl(decl.asInstanceOf[Declaration]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: StmtStall)(cond: Tree): StmtStall = {
+  def apply(tree: StmtStall)(cond: Tree): StmtStall = {
     if (cond eq tree.cond) {
       tree
     } else {
@@ -420,40 +531,67 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: StmtGen)(gen: Tree): StmtGen = {
+  //////////////////////////////////////////////////////////////////////////////
+  // Case
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: CaseRegular)(cond: List[Tree], stmts: List[Tree]): CaseRegular = {
+    if ((cond eq tree.cond) && (stmts eq tree.stmts)) {
+      tree
+    } else {
+      assert(cond forall { _.isInstanceOf[Expr] })
+      assert(stmts forall { _.isInstanceOf[Stmt] })
+      CaseRegular(cond.asInstanceOf[List[Expr]], stmts.asInstanceOf[List[Stmt]]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: CaseDefault)(stmts: List[Tree]): CaseDefault = {
+    if (stmts eq tree.stmts) {
+      tree
+    } else {
+      assert(stmts forall { _.isInstanceOf[Stmt] })
+      CaseDefault(stmts.asInstanceOf[List[Stmt]]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: CaseGen)(gen: Tree): CaseGen = {
     if (gen eq tree.gen) {
       tree
     } else {
-      StmtGen(gen.asInstanceOf[Gen]) withLoc tree.loc
+      CaseGen(gen.asInstanceOf[Gen]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: ExprCall)(expr: Tree, args: List[Tree]): ExprCall = {
+  //////////////////////////////////////////////////////////////////////////////
+  // Expr
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: ExprCall)(expr: Tree, args: List[Tree]): ExprCall = {
     if ((expr eq tree.expr) && (args eq tree.args)) {
       tree
     } else {
-      assert(args forall { _.isInstanceOf[Expr] })
-      ExprCall(expr.asInstanceOf[Expr], args.asInstanceOf[List[Expr]]) withLoc tree.loc
+      assert(args forall { _.isInstanceOf[Arg] })
+      ExprCall(expr.asInstanceOf[Expr], args.asInstanceOf[List[Arg]]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: ExprUnary)(expr: Tree): ExprUnary = {
+  def apply(tree: ExprUnary)(expr: Tree): ExprUnary = {
     if (expr eq tree.expr) {
       tree
     } else {
-      ExprUnary(tree.op, expr.asInstanceOf[Expr]) withLoc tree.loc
+      tree.copy(expr = expr.asInstanceOf[Expr]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: ExprBinary)(lhs: Tree, rhs: Tree): ExprBinary = {
+  def apply(tree: ExprBinary)(lhs: Tree, rhs: Tree): ExprBinary = {
     if ((lhs eq tree.lhs) && (rhs eq tree.rhs)) {
       tree
     } else {
-      ExprBinary(lhs.asInstanceOf[Expr], tree.op, rhs.asInstanceOf[Expr]) withLoc tree.loc
+      tree.copy(lhs = lhs.asInstanceOf[Expr], rhs = rhs.asInstanceOf[Expr]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: ExprTernary)(cond: Tree, thenExpr: Tree, elseExpr: Tree): ExprTernary = {
+  def apply(tree: ExprTernary)(cond: Tree, thenExpr: Tree, elseExpr: Tree): ExprTernary = {
     if ((cond eq tree.cond) && (thenExpr eq tree.thenExpr) && (elseExpr eq tree.elseExpr)) {
       tree
     } else {
@@ -461,7 +599,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: ExprRep)(count: Tree, expr: Tree): ExprRep = {
+  def apply(tree: ExprRep)(count: Tree, expr: Tree): ExprRep = {
     if ((count eq tree.count) && (expr eq tree.expr)) {
       tree
     } else {
@@ -469,7 +607,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: ExprCat)(parts: List[Tree]): ExprCat = {
+  def apply(tree: ExprCat)(parts: List[Tree]): ExprCat = {
     if (parts eq tree.parts) {
       tree
     } else {
@@ -478,7 +616,7 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: ExprIndex)(expr: Tree, index: Tree): ExprIndex = {
+  def apply(tree: ExprIndex)(expr: Tree, index: Tree): ExprIndex = {
     if ((expr eq tree.expr) && (index eq tree.index)) {
       tree
     } else {
@@ -486,15 +624,31 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: ExprSlice)(expr: Tree, lidx: Tree, ridx: Tree): ExprSlice = {
-    if ((expr eq tree.expr) && (lidx eq tree.lidx) && (ridx eq tree.ridx)) {
+  def apply(tree: ExprSlice)(expr: Tree, lIdx: Tree, rIdx: Tree): ExprSlice = {
+    if ((expr eq tree.expr) && (lIdx eq tree.lIdx) && (rIdx eq tree.rIdx)) {
       tree
     } else {
-      ExprSlice(expr.asInstanceOf[Expr], lidx.asInstanceOf[Expr], tree.op, ridx.asInstanceOf[Expr]) withLoc tree.loc
+      tree.copy(
+        expr = expr.asInstanceOf[Expr],
+        lIdx = lIdx.asInstanceOf[Expr],
+        rIdx = rIdx.asInstanceOf[Expr]
+      ) withLoc tree.loc
     }
   }
 
-  final def apply(tree: ExprRef)(ref: Tree): ExprRef = {
+  def apply(tree: ExprSelect)(expr: Tree, idxs: List[Tree]): ExprSelect = {
+    if ((expr eq tree.expr) && (idxs eq tree.idxs)) {
+      tree
+    } else {
+      assert(idxs forall { _.isInstanceOf[Expr] })
+      tree.copy(
+        expr = expr.asInstanceOf[Expr],
+        idxs = idxs.asInstanceOf[List[Expr]]
+      ) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: ExprRef)(ref: Tree): ExprRef = {
     if (ref eq tree.ref) {
       tree
     } else {
@@ -502,24 +656,39 @@ object TreeCopier {
     }
   }
 
-  final def apply(tree: ExprSelect)(expr: Tree, idxs: List[Tree]): ExprSelect = {
-    if ((expr eq tree.expr) && (idxs eq tree.idxs)) {
-      tree
-    } else {
-      assert(idxs forall { _.isInstanceOf[Expr] })
-      ExprSelect(expr.asInstanceOf[Expr], tree.selector, idxs.asInstanceOf[List[Expr]]) withLoc tree.loc
-    }
-  }
-
-  final def apply(tree: ExprCast)(expr: Tree): ExprCast = {
+  def apply(tree: ExprCast)(expr: Tree): ExprCast = {
     if (expr eq tree.expr) {
       tree
     } else {
-      ExprCast(tree.kind, expr.asInstanceOf[Expr]) withLoc tree.loc
+      tree.copy(expr = expr.asInstanceOf[Expr]) withLoc tree.loc
     }
   }
 
-  final def apply(tree: Thicket)(trees: List[Tree]): Thicket = {
+  //////////////////////////////////////////////////////////////////////////////
+  // Arg
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: ArgP)(expr: Tree): ArgP = {
+    if (expr eq tree.expr) {
+      tree
+    } else {
+      ArgP(expr.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  def apply(tree: ArgN)(expr: Tree): ArgN = {
+    if (expr eq tree.expr) {
+      tree
+    } else {
+      tree.copy(expr = expr.asInstanceOf[Expr]) withLoc tree.loc
+    }
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Thicket
+  //////////////////////////////////////////////////////////////////////////////
+
+  def apply(tree: Thicket)(trees: List[Tree]): Thicket = {
     if (trees eq tree.trees) {
       tree
     } else {

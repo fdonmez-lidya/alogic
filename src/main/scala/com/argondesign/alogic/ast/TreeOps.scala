@@ -22,7 +22,7 @@ import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Loc
 import com.argondesign.alogic.core.Types._
-import com.argondesign.alogic.frontend.Parser
+import com.argondesign.alogic.frontend.Parser.Parseable
 import com.argondesign.alogic.passes.AddCasts
 import com.argondesign.alogic.passes.ReplaceUnaryTicks
 import com.argondesign.alogic.passes.ResolvePolyFunc
@@ -37,7 +37,7 @@ trait TreeOps extends TreePrintOps { this: Tree =>
   // Trees nodes have a type 'tpe' which can be set once
   //////////////////////////////////////////////////////////////////////////////
 
-  final private[this] var _tpe: Type = null // scalastyle:ignore var.field
+  final private[this] var _tpe: Type = null
 
   final def hasTpe: Boolean = _tpe != null
 
@@ -115,67 +115,63 @@ final class TreeExt[T <: Tree](val tree: T) extends AnyVal {
   }
 }
 
-trait ObjectTreeOps extends TreeUntype {
+trait ObjectTreeOps {
 
-  ////////////////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////////
   // Implicit dispatchers for any Tree that can be directly parsed by the parser
-  ////////////////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////////
 
-  implicit final val parseableRoot = new Parser.Parseable[Root] {
-    type C = StartContext
-    def parse(parser: AlogicParser): StartContext = parser.start()
-    def build(ctx: StartContext)(implicit cc: CompilerContext): Root = RootBuilder(ctx)
+  implicit final val parseableRoot: Parseable[Root] = new Parseable[Root] {
+    type C = RootContext
+    def parse(parser: AlogicParser): RootContext = parser.root()
+    def build(ctx: RootContext)(implicit cc: CompilerContext): Root = RootBuilder(ctx)
   }
 
-  implicit final val parseableDefIdent = new Parser.Parseable[DefnRef] {
-    type C = DefnContext
-    def parse(parser: AlogicParser): DefnContext = parser.defn()
-    def build(ctx: DefnContext)(implicit cc: CompilerContext): DefnRef = DefnBuilder(ctx)
-  }
-
-  implicit final val parseableEntity = new Parser.Parseable[Entity] {
-    type C = EntityContext
-    def parse(parser: AlogicParser): EntityContext = parser.entity()
-    def build(ctx: EntityContext)(implicit cc: CompilerContext): Entity = EntityBuilder(ctx)
-  }
-
-  implicit final val parseableDeclIdent = new Parser.Parseable[DeclRef] {
+  implicit final val parseableDecl: Parseable[Decl] = new Parseable[Decl] {
     type C = DeclContext
     def parse(parser: AlogicParser): DeclContext = parser.decl()
-    def build(ctx: DeclContext)(implicit cc: CompilerContext): DeclRef = DeclBuilder(ctx)
+    def build(ctx: DeclContext)(implicit cc: CompilerContext): Decl = DeclBuilder(ctx)
   }
 
-  implicit final val parseableEnt = new Parser.Parseable[Ent] {
+  implicit final val parseableRiz: Parseable[Riz] = new Parseable[Riz] {
+    type C = RizContext
+    def parse(parser: AlogicParser): RizContext = parser.riz()
+    def build(ctx: RizContext)(implicit cc: CompilerContext): Riz = RizBuilder(ctx)
+  }
+
+  implicit final val parseableEnt: Parseable[Ent] = new Parseable[Ent] {
     type C = EntContext
     def parse(parser: AlogicParser): EntContext = parser.ent()
-    def build(ctx: EntContext)(implicit cc: CompilerContext): Ent = {
-      val ents = EntBuilder(ctx)
-      assert(ents.length == 1)
-      ents.head
-    }
+    def build(ctx: EntContext)(implicit cc: CompilerContext): Ent = EntBuilder(ctx)
   }
 
-  implicit final val parseableStmt = new Parser.Parseable[Stmt] {
-    type C = StatementContext
-    def parse(parser: AlogicParser): StatementContext = parser.statement()
-    def build(ctx: StatementContext)(implicit cc: CompilerContext): Stmt = StmtBuilder(ctx)
+  implicit final val parseableRec: Parseable[Rec] = new Parseable[Rec] {
+    type C = RecContext
+    def parse(parser: AlogicParser): RecContext = parser.rec()
+    def build(ctx: RecContext)(implicit cc: CompilerContext): Rec = RecBuilder(ctx)
   }
 
-  implicit final val parseableExpr = new Parser.Parseable[Expr] {
+  implicit final val parseableGen: Parseable[Gen] = new Parseable[Gen] {
+    type C = GenContext
+    def parse(parser: AlogicParser): GenContext = parser.gen()
+    def build(ctx: GenContext)(implicit cc: CompilerContext): Gen = GenBuilder(ctx)
+  }
+
+  implicit final val parseableStmt: Parseable[Stmt] = new Parseable[Stmt] {
+    type C = StmtContext
+    def parse(parser: AlogicParser): StmtContext = parser.stmt()
+    def build(ctx: StmtContext)(implicit cc: CompilerContext): Stmt = StmtBuilder(ctx)
+  }
+
+  implicit final val parseableExpr: Parseable[Expr] = new Parseable[Expr] {
     type C = ExprContext
     def parse(parser: AlogicParser): ExprContext = parser.expr()
     def build(ctx: ExprContext)(implicit cc: CompilerContext): Expr = ExprBuilder(ctx)
-  }
-
-  implicit final val parseableGen = new Parser.Parseable[Gen] {
-    type C = GenerateContext
-    def parse(parser: AlogicParser): GenerateContext = parser.generate()
-    def build(ctx: GenerateContext)(implicit cc: CompilerContext): Gen = GenBuilder(ctx)
   }
 
   //////////////////////////////////////////////////////////////////////////////
   // Tree to TreeExt implicit conversion
   //////////////////////////////////////////////////////////////////////////////
 
-  implicit def tree2TreeExt[T <: Tree](tree: T) = new TreeExt[T](tree)
+  implicit def tree2TreeExt[T <: Tree](tree: T): TreeExt[T] = new TreeExt[T](tree)
 }

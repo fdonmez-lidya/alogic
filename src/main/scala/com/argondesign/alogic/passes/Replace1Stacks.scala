@@ -19,31 +19,24 @@ import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Symbols._
-import com.argondesign.alogic.core.Types._
 
 import scala.collection.mutable
 
 final class Replace1Stacks(implicit cc: CompilerContext) extends TreeTransformer {
 
-  // Set of stack symbols to replace
-  private[this] val stackSet = mutable.Set[TermSymbol]()
+  // Map from original stack variable symbol to the corresponding replacement,
+  private[this] val stackMap = mutable.LinkedHashMap[Symbol, Symbol]()
 
   override def skip(tree: Tree): Boolean = tree match {
-    case entity: Entity => entity.declarations.isEmpty
-    case _              => false
+    case Decl(_, desc: DescEntity) => desc.decls.isEmpty
+    case Decl(_, _: DescRecord)    => true
+    case _                         => false
   }
 
   override def enter(tree: Tree): Unit = tree match {
-    case Decl(symbol, _) =>
-      symbol.kind match {
-        case TypeStack(kind, depth) if depth.value contains BigInt(1) =>
-          // TODO: iff no access to empty/full ports
-          // Add to set of symbols to replace
-          stackSet add symbol
-          // Change type to element type
-          symbol.kind = kind
-        case _ =>
-      }
+    // TODO: iff no access to empty/full ports
+    case Decl(Sym(symbol, _), DescStack(_, depth)) if depth.value contains BigInt(1) =>
+      stackMap(symbol) = cc.newSymbolLike(symbol) tap { _.kind = symbol.kind.asStack.kind }
 
     case _ =>
   }
@@ -52,27 +45,31 @@ final class Replace1Stacks(implicit cc: CompilerContext) extends TreeTransformer
     val result: Tree = tree match {
 
       //////////////////////////////////////////////////////////////////////////
+      // Replace the stack decl with the decl of the new symbol
+      //////////////////////////////////////////////////////////////////////////
+
+      case Decl(Sym(s, _), _: DescStack) => stackMap(s).decl
+
+      //////////////////////////////////////////////////////////////////////////
       // Rewrite statements
       //////////////////////////////////////////////////////////////////////////
 
-      case StmtExpr(ExprCall(ExprSelect(ExprSym(symbol: TermSymbol), "push" | "set", _), args))
-          if stackSet contains symbol => {
-        StmtAssign(ExprSym(symbol), args.head)
-      }
+      case StmtExpr(ExprCall(ExprSelect(ExprSym(s), "push" | "set", _), List(ArgP(arg)))) =>
+        stackMap.get(s) map { symbol =>
+          StmtAssign(ExprSym(symbol), arg)
+        } getOrElse tree
 
       //////////////////////////////////////////////////////////////////////////
       // Rewrite expressions
       //////////////////////////////////////////////////////////////////////////
 
-      case ExprCall(ExprSelect(ExprSym(symbol: TermSymbol), "pop" | "top", _), Nil)
-          if stackSet contains symbol => {
-        ExprSym(symbol)
-      }
+      case ExprCall(ExprSelect(ExprSym(s), "pop" | "top", _), Nil) =>
+        stackMap.get(s) map { symbol =>
+          ExprSym(symbol)
+        } getOrElse tree
 
-      case ExprSelect(ExprSym(symbol: TermSymbol), "full" | "empty", _)
-          if stackSet contains symbol => {
-        cc.ice(tree, "Replacing 1 deep steck with full access")
-      }
+      case ExprSelect(ExprSym(s), "full" | "empty", _) if stackMap contains s =>
+        cc.ice(tree, "Replacing 1 deep stack with full access")
 
       case _ => tree
     }

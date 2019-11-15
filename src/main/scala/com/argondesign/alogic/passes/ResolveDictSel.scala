@@ -19,48 +19,43 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
-import com.argondesign.alogic.transform.DictIdxValues
 
-final class ResolveDictPorts(implicit cc: CompilerContext) extends TreeTransformer {
+final class ResolveDictSel(implicit cc: CompilerContext) extends TreeTransformer {
 
   override val typed: Boolean = false
 
-  override def skip(tree: Tree): Boolean = tree match {
-    case _: Root       => false
-    case _: Entity     => false
-    case _: EntEntity  => false
-    case _: EntConnect => false
-    case _: Expr       => false
-    case _             => true
+  def values(idxs: List[Expr])(implicit cc: CompilerContext): Option[List[BigInt]] = idxs match {
+    case Nil => Some(Nil)
+    case head :: tail =>
+      val resOpt = values(tail) // Compute eagerly to emit all errors
+      head.value match {
+        case Some(value) => resOpt map { value :: _ }
+        case None        => cc.error(head, "Identifier index must be a compile time constant"); None
+      }
   }
 
   override def transform(tree: Tree): Tree = tree match {
-    case ExprSelect(expr, sel, Nil) =>
-      expr match {
-        // Error for referencing x.p#[n] as x.p__n
-        case ExprSym(iSymbol) if iSymbol.kind.isInstance =>
-          iSymbol.kind.asInstance.entitySymbol.kind.asEntity.portSymbols exists { pSymbol =>
-            !pSymbol.attr.sourceName.isSet && pSymbol.name == sel
-          } pipe {
-            case true => tree
-            case false =>
-              cc.error(tree, s"No port named '$sel' on instance '${expr.toSource}'")
-              ExprError() withLoc tree.loc
-          }
-        case _ => tree
+    // Error for referencing x.p#[n] as x.p__n
+    case ExprSelect(ExprSym(iSymbol), sel, Nil) if iSymbol.kind.isEntity =>
+      iSymbol.kind.asEntity.publicSymbols exists { pSymbol =>
+        !pSymbol.attr.sourceName.isSet && pSymbol.name == sel
+      } pipe {
+        case true => tree
+        case false =>
+          cc.error(tree, s"No port named '$sel' on instance '${iSymbol.name}'")
+          ExprError() withLoc tree.loc
       }
 
-    case ExprSelect(expr, sel, idxs) =>
+    case ExprSelect(expr, sel, idxs) if idxs.nonEmpty =>
       val res = expr match {
-        case ExprSym(iSymbol) if iSymbol.kind.isInstance =>
-          DictIdxValues(idxs) map { idxValues =>
-            val eSymbol = iSymbol.kind.asInstance.entitySymbol
-            eSymbol.kind.asEntity.portSymbols collectFirst {
+        case ExprSym(iSymbol) if iSymbol.kind.isEntity =>
+          values(idxs) map { idxValues =>
+            iSymbol.kind.asEntity.publicSymbols collectFirst {
               case portSymbol if portSymbol.attr.sourceName.contains((sel, idxValues)) =>
                 ExprSelect(expr, portSymbol.name, Nil)
             } getOrElse {
               val srcName = idxValues.mkString(sel + "#[", ", ", "]")
-              cc.error(tree, s"No port named '$srcName' on instance '${expr.toSource}'")
+              cc.error(tree, s"No port named '$srcName' on instance '${iSymbol.name}'")
               ExprError()
             }
           } getOrElse {
@@ -83,7 +78,7 @@ final class ResolveDictPorts(implicit cc: CompilerContext) extends TreeTransform
   }
 }
 
-object ResolveDictPorts extends TreeTransformerPass {
+object ResolveDictSel extends TreeTransformerPass {
   val name = "resolve-dict-ports"
-  def create(implicit cc: CompilerContext) = new ResolveDictPorts
+  def create(implicit cc: CompilerContext) = new ResolveDictSel
 }

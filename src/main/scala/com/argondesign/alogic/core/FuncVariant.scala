@@ -10,18 +10,14 @@
 //
 // DESCRIPTION:
 //
-// Simple Antlr base visitor that yields a list of values
 ////////////////////////////////////////////////////////////////////////////////
 
-package com.argondesign.alogic.antlr
+package com.argondesign.alogic.core
 
-import org.antlr.v4.runtime.tree.RuleNode
+sealed trait FuncVariant
 
-class AlogicListVisitor[T] extends AlogicBaseVisitor[List[T], List[T], List[T]] {
-  override def visit[U <: RuleNode](ctxList: List[U]): List[T] = ctxList flatMap visit
-
-  override def visit[U <: RuleNode](ctxOpt: Option[U]): List[T] = ctxOpt match {
-    case Some(ctx) => visit(ctx)
-    case None      => Nil
-  }
+object FuncVariant {
+  case object None extends FuncVariant
+  case object Ctrl extends FuncVariant
+  case object Comb extends FuncVariant
 }

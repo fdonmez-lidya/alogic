@@ -21,13 +21,14 @@ import com.argondesign.alogic.analysis.WrittenSymbols
 import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
+import com.argondesign.alogic.core.enums.EntityVariant
 
 final class LowerVariables(implicit cc: CompilerContext) extends TreeTransformer {
 
   // TODO: Generate clock enables
 
   override def skip(tree: Tree): Boolean = tree match {
-    case entity: Entity => entity.symbol.attr.variant.value == "network"
+    case Decl(_, DescEntity(EntityVariant.Net, _)) => true
     // We do not replace _q with _d in connects, connects always use the _q
     case _: EntConnect => true
     case _             => false
@@ -35,24 +36,24 @@ final class LowerVariables(implicit cc: CompilerContext) extends TreeTransformer
 
   override def enter(tree: Tree): Unit = tree match {
 
-    case entity: Entity => {
+    case desc: DescEntity =>
       // Drop the oreg prefix from the flops allocated for registered outputs,
       // These will now gain _d and _q, so the names will become unique.
       val prefix = s"oreg${cc.sep}"
       val prefixLen = prefix.length
       for {
-        Decl(oSymbol, _) <- entity.declarations
+        Decl(Sym(oSymbol, _), _) <- desc.decls
         rSymbol <- oSymbol.attr.oReg.get
       } {
         val name = rSymbol.name
         assert(name startsWith prefix)
-        rSymbol rename (name drop prefixLen)
+        rSymbol.name = name drop prefixLen
         oSymbol.attr.oReg.clear()
       }
 
-      // Mark local symbols driven by Connect as combinatorial nets
+      // Mark local symbols driven by Connect as combinational nets
       for {
-        EntConnect(_, List(rhs)) <- entity.connects
+        EntConnect(_, List(rhs)) <- desc.connects
         symbol <- WrittenSymbols(rhs)
         if symbol.kind.isInt
       } {
@@ -61,37 +62,42 @@ final class LowerVariables(implicit cc: CompilerContext) extends TreeTransformer
 
       // Mark memory control signals as combinatorial nets
       for {
-        Decl(mSymbol, _) <- entity.declarations
+        Decl(Sym(mSymbol, _), _) <- desc.decls
         (weSymbol, waSymbol, wdSymbol) <- mSymbol.attr.memory.get
       } {
         weSymbol.attr.combSignal set true
         waSymbol.attr.combSignal set true
         wdSymbol.attr.combSignal set true
       }
-    }
 
-    case Decl(symbol, _) if symbol.kind.isInt && !(symbol.attr.combSignal contains true) => {
-      val loc = tree.loc
-      val name = symbol.name
-      // Append _q to the name of the symbol
-      symbol rename s"${name}_q"
-      // Create the _d symbol
-      val dSymbol = cc.newTermSymbol(s"${name}_d", loc, symbol.kind)
-      // Move the clearOnStall attribute to the _d symbol
-      symbol.attr.clearOnStall.get foreach { attr =>
-        dSymbol.attr.clearOnStall set attr
-        symbol.attr.clearOnStall.clear()
+      desc.decls foreach {
+        case decl @ Decl(Sym(symbol, _), _)
+            if symbol.kind.isInt && !(symbol.attr.combSignal contains true) =>
+          val loc = decl.loc
+          val name = symbol.name
+          // Append _q to the name of the symbol
+          symbol.name = s"${name}_q"
+          // Create the _d symbol
+          val dSymbol = cc.newSymbol(s"${name}_d", loc) tap {
+            _.kind = symbol.kind
+          }
+          // Move the clearOnStall attribute to the _d symbol
+          symbol.attr.clearOnStall.get foreach { attr =>
+            dSymbol.attr.clearOnStall set attr
+            symbol.attr.clearOnStall.clear()
+          }
+          // If the symbol has a default attribute, move that to the _d,
+          // otherwise use the _q as the default initializer
+          val default = symbol.attr.default.getOrElse {
+            ExprSym(symbol) regularize loc
+          }
+          dSymbol.attr.default set default
+          symbol.attr.default.clear()
+          // Set attributes
+          symbol.attr.flop set dSymbol
+
+        case _ =>
       }
-      // If the symbol has a default attribute, move that to the _d,
-      // otherwise use the _q as the default initializer
-      val default = symbol.attr.default.getOrElse {
-        ExprSym(symbol) regularize loc
-      }
-      dSymbol.attr.default set default
-      symbol.attr.default.clear()
-      // Set attributes
-      symbol.attr.flop set dSymbol
-    }
 
     case _ =>
   }
@@ -102,26 +108,24 @@ final class LowerVariables(implicit cc: CompilerContext) extends TreeTransformer
     // Rewrite references
     //////////////////////////////////////////////////////////////////////////
 
-    case ExprSym(qSymbol) => {
+    case ExprSym(qSymbol) =>
       // Rewrite references to flops as references to the _d,
       qSymbol.attr.flop.get map { dSymbol =>
         ExprSym(dSymbol) regularize tree.loc
       } getOrElse {
         tree
       }
-    }
 
     //////////////////////////////////////////////////////////////////////////
     // Add declarations
     //////////////////////////////////////////////////////////////////////////
 
-    case decl @ EntDecl(Decl(qSymbol, _)) => {
+    case decl @ EntDecl(Decl(Sym(qSymbol, _), _)) =>
       qSymbol.attr.flop.get map { dSymbol =>
-        Thicket(List(decl, EntDecl(Decl(dSymbol, None)))) regularize tree.loc
+        Thicket(List(decl, EntDecl(dSymbol.decl))) regularize tree.loc
       } getOrElse {
         tree
       }
-    }
 
     //////////////////////////////////////////////////////////////////////////
     // Note: Initial _d = _q fence statements will be added in

@@ -25,57 +25,56 @@ import com.argondesign.alogic.util.unreachable
 final class CreateStateSystem(implicit cc: CompilerContext) extends TreeTransformer {
 
   override def skip(tree: Tree): Boolean = tree match {
-    case entity: Entity => entity.states.isEmpty
-    case _: EntState    => false
-    case _: Stmt        => false
-    case _: Case        => false
-    case _              => true
+    case Decl(_, desc: DescEntity) => desc.states.isEmpty
+    case Decl(_, _: DescRecord)    => true
+    case _: Expr                   => true
+    case _                         => false
   }
 
   override def transform(tree: Tree): Tree = tree match {
 
     case _: StmtFence => TypeAssigner(Thicket(Nil) withLoc tree.loc)
 
-    case EntState(expr @ ExprInt(_, _, value), body) => {
-      EntState(expr, StmtComment(s"State ${value} - line ${tree.loc.line}") :: body) regularize tree.loc
-    }
+    case desc @ DescState(ExprInt(_, _, value), body) =>
+      val newBody = StmtComment(s"State $value - line ${tree.loc.line}") :: body
+      desc.copy(body = newBody) regularize tree.loc
 
-    case entity: Entity => {
+    case entity: DescEntity =>
       val newBody = List from {
         // Drop states and the comb process
         entity.body.iterator filter {
-          case _: EntCombProcess => false
-          case _: EntState       => false
-          case _                 => true
+          case _: EntCombProcess              => false
+          case EntDecl(Decl(_, _: DescState)) => false
+          case _                              => true
         } concat {
           // Add the comb process back with the state dispatch
           Iterator single {
             // Ensure entry state is the first
-            val (entryState, otherStates) = entity.states partition {
-              case EntState(ExprInt(_, _, value), _) => value == 0
-              case _                                 => unreachable
+            val (entryState, otherStates) = entity.states map {
+              _.desc.asInstanceOf[DescState]
+            } partition {
+              case DescState(ExprInt(_, _, v), _) => v == 0
+              case _                              => unreachable
             }
 
             val dispatch = entryState ::: otherStates match {
               case Nil          => Nil
-              case first :: Nil => first.stmts
-              case first :: second :: Nil => {
+              case first :: Nil => first.body
+              case first :: second :: Nil =>
                 StmtComment("State dispatch") :: StmtIf(
                   ~ExprSym(entitySymbol.attr.stateVar.value),
-                  first.stmts,
-                  second.stmts
+                  first.body,
+                  second.body
                 ) :: Nil
-              }
-              case first :: rest => {
+              case first :: rest =>
                 StmtComment("State dispatch") :: StmtCase(
                   ExprSym(entitySymbol.attr.stateVar.value),
-                  CaseDefault(first.stmts) :: {
+                  CaseDefault(first.body) :: {
                     rest map {
-                      case EntState(expr, body) => CaseRegular(List(expr), body)
+                      case DescState(expr, body) => CaseRegular(List(expr), body)
                     }
                   }
                 ) :: Nil
-              }
             }
 
             dispatch foreach { _ regularize entity.loc }
@@ -94,14 +93,13 @@ final class CreateStateSystem(implicit cc: CompilerContext) extends TreeTransfor
       }
 
       TypeAssigner(entity.copy(body = newBody) withLoc entity.loc)
-    }
 
     case _ => tree
   }
 
   override protected def finalCheck(tree: Tree): Unit = {
     tree visit {
-      case node: EntState  => cc.ice(node, "Entity states remain")
+      case node: DescState => cc.ice(node, "DescState remains")
       case node: StmtFence => cc.ice(node, "StmtFence remains")
     }
   }

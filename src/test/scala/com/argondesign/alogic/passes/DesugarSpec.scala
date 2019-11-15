@@ -31,9 +31,9 @@ final class DesugarSpec extends FreeSpec with AlogicTest {
 
   def xform(tree: Tree) = {
     tree match {
-      case Root(_, entity: Entity) => cc.addGlobalEntity(entity)
-      case entity: Entity          => cc.addGlobalEntity(entity)
-      case _                       =>
+      case root: Root => cc.addGlobalDecls(root.decls)
+      case decl: Decl => cc.addGlobalDecl(decl)
+      case _          =>
     }
     tree rewrite namer rewrite typer rewrite desugar
   }
@@ -47,7 +47,7 @@ final class DesugarSpec extends FreeSpec with AlogicTest {
           cc.messages shouldBe empty
 
           inside(tree) {
-            case StmtBlock(List(StmtDecl(Decl(dSym, _)), stmt)) =>
+            case StmtBlock(List(StmtDecl(Decl(Sym(dSym, _), _)), stmt)) =>
               inside(stmt) {
                 case StmtAssign(lhs, rhs) =>
                   lhs shouldBe ExprSym(dSym)
@@ -70,7 +70,7 @@ final class DesugarSpec extends FreeSpec with AlogicTest {
           cc.messages shouldBe empty
 
           inside(tree) {
-            case StmtBlock(List(StmtDecl(Decl(dSym, _)), stmt)) =>
+            case StmtBlock(List(StmtDecl(Decl(Sym(dSym, _), _)), stmt)) =>
               inside(stmt) {
                 case StmtAssign(lhs, rhs) =>
                   lhs shouldBe ExprSym(dSym)
@@ -101,8 +101,9 @@ final class DesugarSpec extends FreeSpec with AlogicTest {
               val dSymB = declB.symbol
               dSymB.name shouldBe "b"
               inside(declA) {
-                case StmtDecl(Decl(dSymA, Some(ExprInt(false, 2, v)))) if v == 0 =>
-                  dSymA.kind shouldBe TypeSInt(Expr(2))
+                case StmtDecl(Decl(Sym(dSymA, _), DescVar(_, Some(ExprInt(false, 2, v)))))
+                    if v == 0 =>
+                  dSymA.kind shouldBe TypeSInt(2)
                   inside(assignB) {
                     case StmtAssign(ExprSym(symB), ExprSym(symA)) =>
                       symB.name shouldBe "b";
@@ -113,6 +114,34 @@ final class DesugarSpec extends FreeSpec with AlogicTest {
           }
         }
       }
+    }
+
+    "replace singleton instances with entity + instance" in {
+
+      val tree = xform {
+        """|network a {
+           |  new fsm b {
+           |  }
+           |}""".stripMargin.asTree[Root]
+      }
+
+      inside(tree) {
+        case Root(List(RizDecl(decl_a))) =>
+          inside(decl_a) {
+            case Decl(Sym(a, _), DescEntity(_, List(EntDecl(decl_b_e), EntDecl(decl_b_i)))) =>
+              inside(decl_b_e) {
+                case Decl(Sym(b_e, _), _: DescEntity) =>
+                  inside(decl_b_i) {
+                    case Decl(Sym(b_i, _), DescInstance(ExprSym(`b_e`))) =>
+                      a.name shouldBe "a"
+                      b_e.name shouldBe "b"
+                      b_i.name shouldBe "b"
+                      b_e shouldNot be theSameInstanceAs b_i
+                  }
+              }
+          }
+      }
+
     }
   }
 }

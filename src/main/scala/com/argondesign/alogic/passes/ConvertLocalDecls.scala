@@ -35,7 +35,7 @@ final class ConvertLocalDecls(implicit cc: CompilerContext) extends TreeTransfor
 
   private[this] def getDefaultInitializer(kind: Type): Option[Expr] = {
     lazy val signed = kind.isSigned
-    lazy val width = kind.width
+    lazy val width = kind.width.toInt
     cc.settings.uninitialized match {
       case UninitializedLocals.None  => None
       case UninitializedLocals.Zeros => Some(ExprInt(signed, width, 0))
@@ -60,29 +60,23 @@ final class ConvertLocalDecls(implicit cc: CompilerContext) extends TreeTransfor
   }
 
   override def skip(tree: Tree): Boolean = tree match {
-    case _: Entity      => false
-    case _: EntFunction => false
-    case _: Stmt        => false
-    case _: Case        => false
-    case _              => true
+    case _: Expr => true
+    case _       => false
   }
 
   override def transform(tree: Tree): Tree = tree match {
-
-    case StmtDecl(decl @ Decl(symbol, initOpt)) => {
-      localDecls.append(EntDecl(decl.copy(init = None)) regularize decl.loc)
+    case StmtDecl(decl @ Decl(Sym(symbol, _), desc @ DescVar(_, initOpt))) =>
+      localDecls.append(EntDecl(decl.copy(desc = desc.copy(initOpt = None))) regularize decl.loc)
       initOpt orElse getDefaultInitializer(symbol.kind) map { init =>
         StmtAssign(ExprSym(symbol), init) regularize tree.loc
       } getOrElse {
         Thicket(Nil) regularize tree.loc
       }
-    }
 
-    case entity: Entity if localDecls.nonEmpty => {
-      TypeAssigner {
-        entity.copy(body = (localDecls prependAll entity.body).toList) withLoc tree.loc
-      }
-    }
+    case decl @ Decl(_, desc: DescEntity) if localDecls.nonEmpty =>
+      val newBody = List.from(desc.body.iterator ++ localDecls.iterator)
+      val newDesc = TypeAssigner(desc.copy(body = newBody) withLoc tree.loc)
+      TypeAssigner(decl.copy(desc = newDesc) withLoc tree.loc)
 
     case _ => tree
   }

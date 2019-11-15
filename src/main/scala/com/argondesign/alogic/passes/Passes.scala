@@ -18,7 +18,7 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.backend.CodeGeneration
 import com.argondesign.alogic.core.CompilerContext
-import com.argondesign.alogic.typer.Typer
+import com.argondesign.alogic.transform.ShuffleEnts
 
 import scala.util.ChainingSyntax
 
@@ -32,14 +32,13 @@ object Passes extends ChainingSyntax {
       ////////////////////////////////////////////////////////////////////////
       Checker,
       Namer,
-      UnusedCheck(postSpecialize = false),
-      Specialize,
-      ResolveDictPorts,
-      UnusedCheck(postSpecialize = true),
+      UnusedCheck(postElaborate = false),
+      Elaborate,
+      ResolveDictSel,
+      UnusedCheck(postElaborate = true),
       // Any passes between here and the middle end can only perform checks
       // and cannot re-write any trees unless errors have been detected
-      Typer(externalRefs = false),
-      Typer(externalRefs = true),
+      TypeCheck,
       PortCheckA,
       ////////////////////////////////////////////////////////////////////////
       // Middle-end
@@ -47,10 +46,9 @@ object Passes extends ChainingSyntax {
       ReplaceUnaryTicks, // This must be first as TypeAssigner cannot handle unary '
       ResolvePolyFunc,
       AddCasts,
-      FoldTypeRefs,
       Desugar,
-      FoldExprInTypes,
       InlineUnsizedConst,
+      FoldTypeAliases,
       FoldExpr(foldRefs = false),
       PortCheckB,
       ConvertMultiConnect,
@@ -111,20 +109,35 @@ object Passes extends ChainingSyntax {
   }
 
   private def applyPass(trees: List[Tree], pass: Pass)(implicit cc: CompilerContext): List[Tree] = {
+
     if (cc.hasError) {
       // If we have encountered errors in an earlier pass, skip any later passes
       trees
     } else {
+      // Shuffle Ent nodes if requested
+      val ts = cc.settings.shuffleEnts match {
+        case Some(seed) =>
+          trees map { tree =>
+            tree rewrite new ShuffleEnts(tree.hasTpe, seed)
+          }
+        case _ => trees
+      }
       // Apply the pass
-      val results = pass(trees)
+      val results = pass(ts) pipe { ts =>
+        // TODO: Get rid of the Retype hack by updating symbols correctly via cloning
+        if (ts forall { _.hasTpe }) Retype(ts) else ts
+      }
 
       // Dump entities if required
       if (cc.settings.dumpTrees) {
-        results foreach {
-          case Root(_, entity) => cc.dumpEntity(entity, s".${cc.passNumber}.${pass.name}")
-          case entity: Entity  => cc.dumpEntity(entity, s".${cc.passNumber}.${pass.name}")
-          case _               => ()
+        def dump(trees: List[Tree]): Unit = {
+          trees foreach {
+            case root: Root => dump(root.decls)
+            case decl: Decl => cc.dump(decl, f".${cc.passNumber}%02d.${pass.name}")
+            case _          => ()
+          }
         }
+        dump(results)
       }
 
       // Return the results

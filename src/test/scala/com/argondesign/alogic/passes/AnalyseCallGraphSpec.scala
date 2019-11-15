@@ -35,15 +35,11 @@ final class AnalyseCallGraphSpec extends FreeSpec with AlogicTest {
 
   def xform(tree: Tree): Tree = {
     tree match {
-      case Root(_, entity: Entity) => cc.addGlobalEntity(entity)
-      case entity: Entity          => cc.addGlobalEntity(entity)
-      case _                       =>
+      case root: Root => cc.addGlobalDecls(root.decls)
+      case decl: Decl => cc.addGlobalDecl(decl)
+      case _          =>
     }
-    val node = tree rewrite namer match {
-      case Root(_, entity) => entity
-      case other           => other
-    }
-    node rewrite typer rewrite fold rewrite lowerLoops rewrite analyseCallGraph
+    tree rewrite namer rewrite typer rewrite fold rewrite lowerLoops rewrite analyseCallGraph
   }
 
   "AnalyseCallGraph should" - {

@@ -18,10 +18,13 @@ package com.argondesign.alogic.lib
 import com.argondesign.alogic.Config
 import com.argondesign.alogic.core.CompilerContext
 
+import scala.util.ChainingSyntax
+
 // Tree transformers are applied during a post-order traversal of a Tree.
 abstract class TreeLikeTransformer[T <: TreeLike](
     implicit val cc: CompilerContext
-) extends (T => T) {
+) extends (T => T)
+    with ChainingSyntax {
 
   // enter is called when entering a node, before visiting any children.
   // enter is used to modify the state of the tree transformer or the context

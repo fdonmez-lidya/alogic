@@ -17,38 +17,37 @@
 package com.argondesign.alogic.passes
 
 import com.argondesign.alogic.ast.TreeTransformer
+import com.argondesign.alogic.ast.Trees.Expr.InstancePortRef
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Symbols._
-import com.argondesign.alogic.ast.Trees.Expr.InstancePortRef
 
 import scala.collection.mutable
-import scala.language.postfixOps
 
 final class PropagateImplications(implicit cc: CompilerContext) extends TreeTransformer {
 
   override def skip(tree: Tree): Boolean = tree match {
-    case _: Entity => false
-    case _         => true
+    case Decl(_, _: DescEntity) => false
+    case _: DescEntity          => false
+    case _                      => true
   }
 
   override def enter(tree: Tree): Unit = tree match {
 
-    case entity: Entity => {
+    case desc: DescEntity =>
       // Create empty instance -> port -> local maps
-      val maps = entity.instances collect {
-        case EntInstance(Sym(iSymbol, _), _, _, _) =>
-          iSymbol -> mutable.Map[TermSymbol, TermSymbol]()
-      } toMap
+      val maps = Map from {
+        desc.instances.iterator collect {
+          case Decl(Sym(iSymbol, _), _) => iSymbol -> mutable.Map[Symbol, Symbol]()
+        }
+      }
 
       // populate them
-      entity.connects foreach {
-        case EntConnect(InstancePortRef(iSymbol, pSymbol), List(ExprSym(nSymbol: TermSymbol))) => {
+      desc.connects foreach {
+        case EntConnect(InstancePortRef(iSymbol, pSymbol), List(ExprSym(nSymbol))) =>
           maps(iSymbol)(pSymbol) = nSymbol
-        }
-        case EntConnect(ExprSym(nSymbol: TermSymbol), List(InstancePortRef(iSymbol, pSymbol))) => {
+        case EntConnect(ExprSym(nSymbol), List(InstancePortRef(iSymbol, pSymbol))) =>
           maps(iSymbol)(pSymbol) = nSymbol
-        }
         case _ =>
       }
 
@@ -63,7 +62,6 @@ final class PropagateImplications(implicit cc: CompilerContext) extends TreeTran
       } {
         naSymbol.attr.implications append lifted
       }
-    }
 
     case _ =>
   }

@@ -32,38 +32,32 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
   implicit val cc = new CompilerContext
 
   def xform(trees: Tree*): Unit = {
-    val entities = trees map {
-      _ match {
-        case Root(_, entity: Entity) => entity
-        case entity: Entity          => entity
-        case _                       => unreachable
+    cc.addGlobalDecls {
+      trees flatMap {
+        case root: Root => root.decls
+        case decl: Decl => List(decl)
+        case _          => unreachable
       }
     }
-
-    cc.addGlobalEntities(entities)
 
     trees map {
       _ rewrite new Checker
     } map {
       _ rewrite new Namer
-    } map {
-      _ rewrite new Typer(externalRefs = false)
     } foreach {
-      _ rewrite new Typer(externalRefs = true)
+      _ rewrite new Typer
     }
   }
 
   val treeA = s"""|fsm a_entity {
-                  |  (* unused *) param           bool P = true;
                   |  (* unused *) out             bool fcn;
                   |  (* unused *) out             bool fcnb;
                   |  (* unused *) out             u2   fcn2;
                   |  (* unused *) out sync        bool fcv;
                   |  (* unused *) out sync ready  bool fcr;
                   |  (* unused *) out sync accept bool fca;
-                  |}""".stripMargin.asTree[Entity]
+                  |}""".stripMargin.asTree[Decl]
   val treeB = s"""|fsm b_entity {
-                  |  (* unused *) param           bool P = true;
                   |  (* unused *) in              bool fcn;
                   |  (* unused *) in              bool fcnb;
                   |  (* unused *) in              u2   fcn2;
@@ -71,7 +65,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                   |  (* unused *) in sync         u2   fcv2;
                   |  (* unused *) in sync ready   bool fcr;
                   |  (* unused *) in sync accept  bool fca;
-                  |}""".stripMargin.asTree[Entity]
+                  |}""".stripMargin.asTree[Decl]
 
   "The Typer should check Connect usage" - {
 
@@ -103,7 +97,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |  (* unused *) out u1 po1;
                          |  (* unused *) out u2 po2;
                          |  ${conn};
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           cc.messages.loneElement should beThe[Error](
             "Invalid port reference on left hand side of '->'",
@@ -139,7 +133,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |  (* unused *) out u2 po2b;
                          |  (* unused *) out u4 po4;
                          |  ${conn};
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           cc.messages.loneElement should beThe[Error](
             "Invalid port reference on right hand side of '->'",
@@ -179,7 +173,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |  bar a;
                          |}
                          |network p {
-                         |  param u2 P = 2'd2;
+                         |  const u2 P = 2'd2;
                          |  (* unused *) in u1 pi1;
                          |  (* unused *) in u2 pi2;
                          |  (* unused *) in u4 pi4;
@@ -312,7 +306,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |  (* unused *) new fsm pipeb {}
                          |  (* unused *) new fsm pipec {}
                          |  ${conn};
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (msg.isEmpty) {
             cc.messages shouldBe empty
@@ -350,7 +344,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
            "Left hand side of '->' contains an output from enclosing entity"),
           ("P -> b.fcn", ""),
           ("isn.a -> b.fcn", ""),
-          ("a_entity -> ofcn", "Left hand side of '->' contains non-port type: entity a_entity")
+          ("a_entity -> ofcn", "Left hand side of '->' contains non-port type")
         )
       } {
         conn in {
@@ -359,7 +353,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                 |  bool a;
                 |}
                 |network  foo {
-                |  (* unused *) param bool P = true;
+                |  (* unused *) const bool P = true;
                 |  (* unused *) in              bool ifcn;
                 |  (* unused *) in              bar  isn;
                 |  (* unused *) in sync         bool ifcv;
@@ -369,8 +363,8 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                 |  (* unused *) out sync        bool ofcv;
                 |  (* unused *) out sync ready  bool ofcr;
                 |  (* unused *) out sync accept bool ofca;
-                |  (* unused *) a = new a_entity();
-                |  (* unused *) b = new b_entity();
+                |  (* unused *) a = new a_entity;
+                |  (* unused *) b = new b_entity;
                 |  ${conn};
                 |}""".stripMargin.asTree[Root]
 
@@ -411,9 +405,9 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
           ("a.fcr -> ofcr", ""),
           ("a.fca -> ofca", ""),
           ("a.fcn2 -> {ofcn,ofcnb}", ""),
-          ("a.fcn -> P", "Right hand side of '->' contains non-port type: param u1"),
+          ("a.fcn -> P", "Right hand side of '->' contains non-port type"),
           ("a.fcn -> osn.a", ""),
-          ("ifcn -> b_entity", "Right hand side of '->' contains non-port type: entity b_entity")
+          ("ifcn -> b_entity", "Right hand side of '->' contains non-port type")
         )
       } {
         conn in {
@@ -422,7 +416,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                 |  bool a;
                 |}
                 |network  foo {
-                |  (* unused *) param bool P = true;
+                |  (* unused *) const bool P = true;
                 |  (* unused *) in              bool ifcn;
                 |  (* unused *) in              bool ifcnb;
                 |  (* unused *) in sync         bool ifcv;
@@ -434,8 +428,8 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                 |  (* unused *) out sync        bool ofcv;
                 |  (* unused *) out sync ready  bool ofcr;
                 |  (* unused *) out sync accept bool ofca;
-                |  (* unused *) a = new a_entity();
-                |  (* unused *) b = new b_entity();
+                |  (* unused *) a = new a_entity;
+                |  (* unused *) b = new b_entity;
                 |  ${conn};
                 |}""".stripMargin.asTree[Root]
 
@@ -472,8 +466,8 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                 |}
                 |network  foo {
                 |  (* unused *) in sync bar is;
-                |  (* unused *) a = new a_entity();
-                |  (* unused *) b = new b_entity();
+                |  (* unused *) a = new a_entity;
+                |  (* unused *) b = new b_entity;
                 |  ${connect};
                 |}""".stripMargin.asTree[Root]
 
@@ -522,8 +516,8 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                 |}
                 |network  foo {
                 |  (* unused *) in bar is;
-                |  (* unused *) a = new a_entity();
-                |  (* unused *) b = new b_entity();
+                |  (* unused *) a = new a_entity;
+                |  (* unused *) b = new b_entity;
                 |  ${connect};
                 |}""".stripMargin.asTree[Root]
 
@@ -563,8 +557,8 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                 |  (* unused *) out sync        bool ofcv;
                 |  (* unused *) out sync ready  bool ofcr;
                 |  (* unused *) out sync accept bool ofca;
-                |  (* unused *) a = new a_entity();
-                |  (* unused *) b = new b_entity();
+                |  (* unused *) a = new a_entity;
+                |  (* unused *) b = new b_entity;
                 |  ${conn};
                 |}""".stripMargin.asTree[Root]
 
@@ -601,7 +595,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |   in  ${fc}       bool pi;
                          |   out ${fc} ${st} bool po;
                          |   pi -> po;
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (ok) {
             cc.messages shouldBe empty
@@ -627,7 +621,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |   in  bool pi;
                          |   out bool po ${init};
                          |   pi -> po;
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (ok) {
             cc.messages shouldBe empty
@@ -654,7 +648,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |   in  bool pi;
                          |   out u4   po;
                          |   pi -> po[A];
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           cc.messages shouldBe empty
         }
@@ -678,7 +672,7 @@ final class TyperConnectSpec extends FreeSpec with AlogicTest {
                          |network n {
                          |  (* unused *) in bool p;
                          |  (* unused *) new fsm a {
-                         |    (* unused *) param u8 N = 8'd2;
+                         |    (* unused *) const u8 N = 8'd2;
                          |    (* unused *) in bool b;
                          |    (* unused *) in bar  c;
                          |  }

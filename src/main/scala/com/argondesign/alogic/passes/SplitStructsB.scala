@@ -19,6 +19,7 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
+import com.argondesign.alogic.core.Symbols.Symbol
 import com.argondesign.alogic.core.Types._
 
 import scala.collection.mutable
@@ -28,65 +29,51 @@ final class SplitStructsB(implicit cc: CompilerContext) extends TreeTransformer 
   private[this] val fieldIndexStack = mutable.Stack[Int]()
 
   override def enter(tree: Tree) = tree match {
-
-    case ExprSelect(expr, sel, _) => {
+    case ExprSelect(expr, sel, _) =>
       expr.tpe.underlying match {
-        case kind: TypeStruct => fieldIndexStack.push(kind.fieldNames.indexOf(sel))
-        case _                => fieldIndexStack.push(-1)
+        case kind: TypeRecord => fieldIndexStack push kind.publicSymbols.indexWhere(_.name == sel)
+        case _                => fieldIndexStack push -1
       }
-    }
 
     case _ => ()
-
   }
 
-  override def transform(tree: Tree): Tree = {
-
-    val result: Tree = tree match {
-
-      case ExprSelect(ExprSym(iSymbol), sel, _) if iSymbol.kind.isInstance => {
-        // Rewrite selects of form instance.port(.struct_member)*
-        val kind = iSymbol.kind.asInstance
-        val pSymbol = kind.portSymbol(sel).get
-        pSymbol.attr.fieldSymbols.get map { fSymbols =>
-          val it = fSymbols.iterator
-          def cat(struct: TypeStruct): ExprCat = ExprCat {
-            for (fType <- struct.fieldTypes) yield {
-              fType match {
-                case struct: TypeStruct => cat(struct)
-                case _                  => ExprSelect(ExprSym(iSymbol), it.next().name, Nil)
-              }
+  override def transform(tree: Tree): Tree = tree match {
+    case ExprSelect(ExprSym(iSymbol), sel, _) if iSymbol.kind.isEntity => {
+      // Rewrite selects of form instance.port
+      val kind = iSymbol.kind.asEntity
+      val pSymbol = kind(sel).get
+      pSymbol.attr.fieldSymbols.get map { fSymbols =>
+        def cat(struct: TypeRecord)(implicit it: Iterator[Symbol]): ExprCat = ExprCat {
+          for (symbol <- struct.publicSymbols) yield {
+            symbol.kind match {
+              case struct: TypeRecord => cat(struct)
+              case _                  => ExprSelect(ExprSym(iSymbol), it.next().name, Nil)
             }
           }
-          cat(pSymbol.kind.underlying.asStruct) regularize tree.loc
-        } getOrElse {
-          tree
         }
-      } tap { _ =>
-        fieldIndexStack.pop()
+        cat(pSymbol.kind.underlying.asRecord)(fSymbols.iterator) regularize tree.loc
+      } getOrElse {
+        tree
       }
-
-      case s @ ExprSelect(expr, _, _) => {
-        if (fieldIndexStack.top >= 0) {
-          expr match {
-            case ExprCat(parts) => parts(fieldIndexStack.top)
-            case _              => tree
-          }
-        } else {
-          tree
-        }
-      } tap { _ =>
-        fieldIndexStack.pop()
-      }
-
-      case _ => tree
-    }
-    // If we did modify the node, regularize it
-    if (result ne tree) {
-      result regularize tree.loc
+    } tap { _ =>
+      fieldIndexStack.pop()
     }
 
-    result
+    case ExprSelect(expr, _, _) => {
+      if (fieldIndexStack.top >= 0) {
+        expr match {
+          case ExprCat(parts) => parts(fieldIndexStack.top)
+          case _              => tree
+        }
+      } else {
+        tree
+      }
+    } tap { _ =>
+      fieldIndexStack.pop()
+    }
+
+    case _ => tree
   }
 
 }

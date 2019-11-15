@@ -22,7 +22,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 
-import com.argondesign.alogic.ast.Trees.Entity
+import com.argondesign.alogic.ast.Trees.Decl
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Loc
 import com.argondesign.alogic.core.Settings
@@ -45,27 +45,26 @@ object Main extends App {
   val opath = cliConf.odir().toPath
   val srcbase = cliConf.srcbase.toOption map { _.toPath }
 
-  def entityWriterFactory(entity: Entity, suffix: String): Writer = {
-    def oPathFor(entity: Entity, suffix: String): Path = {
-      val oDir = if (entity.loc eq Loc.synthetic) {
-        // Emit synthetic entities to the root output directory
+  def outputWriterFactory(decl: Decl, suffix: String): Writer = {
+    def oPathFor(decl: Decl, suffix: String): Path = {
+      val oDir = if (decl.loc eq Loc.synthetic) {
+        // Emit synthetic decls to the root output directory
         opath
       } else {
         srcbase match {
           case None => opath
-          case Some(base) => {
-            val dirPath = entity.loc.source.file.toPath.toRealPath().getParent
+          case Some(base) =>
+            val dirPath = decl.loc.source.file.toPath.toRealPath().getParent
             assert(dirPath startsWith base)
             val relPath = base relativize dirPath
             opath resolve relPath
-          }
         }
       }
 
-      oDir resolve (entity.name + suffix)
+      oDir resolve (decl.name + suffix)
     }
 
-    val oPath = oPathFor(entity, suffix)
+    val oPath = oPathFor(decl, suffix)
     val oFile = oPath.toFile
 
     if (!oFile.exists) {
@@ -80,7 +79,7 @@ object Main extends App {
     moduleSearchDirs = if (defaultToCWD) List(cwd) else cliConf.ydir(),
     includeSearchDirs = if (defaultToCWD) List(cwd) else cliConf.incdir(),
     initialDefines = cliConf.defs,
-    entityWriterFactory = entityWriterFactory,
+    outputWriterFactory = outputWriterFactory,
     sep = cliConf.sep(),
     uninitialized = cliConf.uninitialized(),
     ensurePrefix = cliConf.ensurePrefix(),
@@ -94,12 +93,13 @@ object Main extends App {
       case _        => cliConf.stderrisatty.toOption contains true
     },
     dumpTrees = cliConf.dumpTrees.toOption contains true,
+    shuffleEnts = cliConf.shuffleEnts.toOption,
     moduleManifestPath = cliConf.moduleManifest.toOption map { _.toPath },
     resetStyle = cliConf.resetStyle(),
     resetAll = !cliConf.noResetAll()
   )
 
-  implicit val cc = new CompilerContext(settings)
+  implicit val cc: CompilerContext = new CompilerContext(settings)
 
   //////////////////////////////////////////////////////////////////////////////
   // Do the work

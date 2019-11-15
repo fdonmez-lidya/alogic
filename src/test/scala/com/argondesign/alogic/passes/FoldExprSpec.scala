@@ -29,24 +29,20 @@ import org.scalatest.FreeSpec
 
 final class FoldExprSpec extends FreeSpec with AlogicTest {
 
-  implicit val cc = new CompilerContext
+  implicit val cc: CompilerContext = new CompilerContext
   val namer = new Namer
   val typer = new Typer
   val rpoly = new ResolvePolyFunc
   val aics = new AddCasts
-  val fold = new FoldExpr(foldRefs = false)
+  val fold = new FoldExpr(foldRefs = true)
 
   def xform(tree: Tree): Tree = {
     tree match {
-      case Root(_, entity: Entity) => cc.addGlobalEntity(entity)
-      case entity: Entity          => cc.addGlobalEntity(entity)
-      case _                       =>
+      case root: Root => cc.addGlobalDecls(root.decls)
+      case decl: Decl => cc.addGlobalDecl(decl)
+      case _          =>
     }
-    val node = tree rewrite namer match {
-      case Root(_, entity) => entity
-      case other           => other
-    }
-    node rewrite typer rewrite rpoly rewrite aics rewrite fold
+    tree rewrite namer rewrite typer rewrite rpoly rewrite aics rewrite fold
   }
 
   "FoldExpr should fold" - {
@@ -1351,7 +1347,7 @@ final class FoldExprSpec extends FreeSpec with AlogicTest {
                            |    $$display("", ${text});
                            |  }
                            |}""".stripMargin.asTree[Root]
-            val expr = xform(tree) getFirst { case ExprCall(_, List(_, e)) => e }
+            val expr = xform(tree) getFirst { case ExprCall(_, List(_, ArgP(e))) => e }
             val errors = cc.messages filter { _.isInstanceOf[Error] }
             if (msg.isEmpty) {
               expr shouldBe result
@@ -1375,7 +1371,7 @@ final class FoldExprSpec extends FreeSpec with AlogicTest {
                       |    o = B;
                       |    fence;
                       |  }
-                      |}""".stripMargin.asTree[Entity]
+                      |}""".stripMargin.asTree[Decl]
 
       val expr = xform(entity) collectFirst {
         case StmtAssign(_, rhs) => rhs
@@ -1448,13 +1444,9 @@ final class FoldExprSpec extends FreeSpec with AlogicTest {
                            |  (* unused *) out u16 o_16;
                            |
                            |  fence { ${stmt}; }
-                           |}""".stripMargin.asTree[Entity]
+                           |}""".stripMargin.asTree[Decl]
 
-          val expr = xform(entity) rewrite {
-            new FoldExpr(foldRefs = true)
-          } getFirst {
-            case StmtAssign(_, rhs) => rhs
-          }
+          val expr = xform(entity) getFirst { case StmtAssign(_, rhs) => rhs }
 
           expr should matchPattern(pattern)
         }
@@ -1499,7 +1491,7 @@ final class FoldExprSpec extends FreeSpec with AlogicTest {
                            |  (* unused *) out u4 o_4;
                            |
                            |  fence { ${stmt}; }
-                           |}""".stripMargin.asTree[Entity]
+                           |}""".stripMargin.asTree[Decl]
 
           val expr = xform(entity) rewrite {
             new FoldExpr(foldRefs = true)
@@ -1532,13 +1524,13 @@ final class FoldExprSpec extends FreeSpec with AlogicTest {
           ("a",  "u10", { case ExprCat(List(ExprInt(false, 2, z), ExprSym(a))) if z == 0 && a.name == "a" => }, ""),
           ("b",  "i10", { case ExprCall(
                                 ExprSym(s),
-                                List(ExprCat(List(
+                                List(ArgP(ExprCat(List(
                                       ExprRep(
                                         Expr(3),
                                         ExprIndex(
                                           ExprSym(b0),
                                           ExprInt(false, 3, i))),
-                                      ExprSym(b1))))) if s.name == "$signed" && b0.name == "b" && i == 6 && b1.name == "b" =>
+                                      ExprSym(b1)))))) if s.name == "$signed" && b0.name == "b" && i == 6 && b1.name == "b" =>
           }, ""),
           ("a",  "u8", { case ExprSym(a) if a.name == "a" => }, ""),
           ("b",  "i7", { case ExprSym(b) if b.name == "b" => }, ""),
@@ -1559,8 +1551,8 @@ final class FoldExprSpec extends FreeSpec with AlogicTest {
                          |    $$display("", ${exprSrc});
                          |    fence;
                          |  }
-                         |}""".stripMargin.asTree[Entity]
-          val expr = xform(tree) getFirst { case ExprCall(_, List(_, e)) => e }
+                         |}""".stripMargin.asTree[Decl]
+          val expr = xform(tree) getFirst { case ExprCall(_, List(_, ArgP(e))) => e }
           val kind = kindSrc.asTree[Expr] match {
             case ExprType(kind) => kind
             case _              => fail()

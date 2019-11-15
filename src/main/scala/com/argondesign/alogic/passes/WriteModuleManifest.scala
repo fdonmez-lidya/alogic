@@ -25,7 +25,7 @@ import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeAccept
 import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeNone
 import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeReady
 import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeValid
-import com.argondesign.alogic.core.Symbols.TermSymbol
+import com.argondesign.alogic.core.Symbols.Symbol
 import com.argondesign.alogic.core.Types.TypeEntity
 import com.argondesign.alogic.core.Types.TypeIn
 import com.argondesign.alogic.core.Types.TypeOut
@@ -43,12 +43,12 @@ object WriteModuleManifest extends Pass {
     ////////////////////////////////////////////////////////////////////////////
 
     val dict = for {
-      entity @ Entity(Sym(eSymbol, _), _) <- trees.par
+      Decl(Sym(eSymbol, _), desc: DescEntity) <- trees.par
     } yield {
       // High level port symbols
-      val TypeEntity(_, pSymbols, _) = eSymbol.attr.highLevelKind.value.asEntity
+      val TypeEntity(_, pSymbols) = eSymbol.attr.highLevelKind.value.asEntity
       // Low level signal symbols
-      val TypeEntity(_, sSymbols, _) = eSymbol.kind.asEntity
+      val TypeEntity(_, sSymbols) = eSymbol.kind.asType.kind.asEntity
 
       //////////////////////////////////////////////////////////////////////////
       // Compute signals
@@ -56,15 +56,12 @@ object WriteModuleManifest extends Pass {
 
       // Compute payload -> port, valid -> port, ready -> port maps
 
-      def payloadSymbol(pSymbol: TermSymbol): Option[TermSymbol] = {
+      def payloadSymbol(pSymbol: Symbol): Option[Symbol] = {
         val attr = pSymbol.attr
         if (!attr.fcv.isSet && !attr.fcr.isSet) {
           Some(pSymbol)
         } else {
-          attr.fcv.get.map(_._1) orElse attr.fcr.get.map(_._1) match {
-            case opt @ Some(_: TermSymbol) => opt.asInstanceOf[Option[TermSymbol]]
-            case _                         => None
-          }
+          attr.fcv.get.flatMap(_._1) orElse attr.fcr.get.flatMap(_._1)
         }
       }
 
@@ -176,9 +173,9 @@ object WriteModuleManifest extends Pass {
       //////////////////////////////////////////////////////////////////////////
 
       val instances = for {
-        EntInstance(Sym(iSymbol, _), Sym(eSymbol, _), _, _) <- entity.instances
+        Decl(Sym(iSymbol, _), _) <- desc.instances
       } yield {
-        iSymbol.name -> eSymbol.name
+        iSymbol.name -> iSymbol.kind.asEntity.symbol.name
       }
 
       eSymbol.name -> List(
@@ -208,10 +205,10 @@ object WriteModuleManifest extends Pass {
 
         def writePair(key: Any, value: Any): Unit = {
           pw.write(indent)
-          pw.write(s"""${i0}"${key}" : """)
+          pw.write(s"""$i0"$key" : """)
           value match {
             case child: Seq[_] => writeDict(child, level + 1)
-            case str: String   => pw.write(s""""${str}"""")
+            case str: String   => pw.write(s""""$str"""")
             case other         => pw.write(other.toString)
           }
         }
@@ -233,7 +230,7 @@ object WriteModuleManifest extends Pass {
       }
     }
 
-    writeDict(dict.seq, level = 0)
+    writeDict(dict.seq.sortBy(_._1), level = 0)
     pw.write("\n")
 
     pw.close()

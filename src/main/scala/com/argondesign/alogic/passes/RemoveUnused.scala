@@ -23,13 +23,13 @@ import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Symbols._
 import com.argondesign.alogic.core.Types._
+import com.argondesign.alogic.core.enums.EntityVariant
 import com.argondesign.alogic.typer.TypeAssigner
 import com.argondesign.alogic.util.unreachable
 
 import scala.annotation.tailrec
 import scala.collection.immutable.HashSet
 import scala.collection.mutable
-import scala.collection.parallel.CollectionConverters._
 
 final class RemoveUnused(unusedSymbols: Set[Symbol])(implicit cc: CompilerContext)
     extends TreeTransformer {
@@ -37,11 +37,10 @@ final class RemoveUnused(unusedSymbols: Set[Symbol])(implicit cc: CompilerContex
   private[this] val ourUnused = mutable.HashSet[Symbol]()
 
   override def enter(tree: Tree): Unit = tree match {
-    case entity: Entity => {
-      for (Decl(symbol, _) <- entity.declarations if unusedSymbols contains symbol) {
+    case desc: DescEntity =>
+      for (Decl(Sym(symbol, _), _) <- desc.decls if unusedSymbols contains symbol) {
         ourUnused add symbol
       }
-    }
 
     case _ => ()
   }
@@ -49,13 +48,12 @@ final class RemoveUnused(unusedSymbols: Set[Symbol])(implicit cc: CompilerContex
   def emptyStmt(stmt: Stmt): Boolean = stmt match {
     case StmtBlock(body)         => body forall emptyStmt
     case StmtIf(_, eBody, tBody) => (eBody forall emptyStmt) && (tBody forall emptyStmt)
-    case StmtCase(_, cases) => {
+    case StmtCase(_, cases) =>
       cases forall {
         case CaseRegular(_, stmts) => stmts forall emptyStmt
         case CaseDefault(stmts)    => stmts forall emptyStmt
         case _: CaseGen            => unreachable
       }
-    }
     case _ => false
   }
 
@@ -71,40 +69,36 @@ final class RemoveUnused(unusedSymbols: Set[Symbol])(implicit cc: CompilerContex
     // Remove assignments that write only unused symbols
     ////////////////////////////////////////////////////////////////////////////
 
-    case StmtAssign(lhs, _) if WrittenSymbols(lhs) forall ourUnused.contains => {
+    case StmtAssign(lhs, _) if WrittenSymbols(lhs) forall ourUnused.contains =>
       TypeAssigner(Thicket(Nil) withLoc tree.loc)
-    }
 
     ////////////////////////////////////////////////////////////////////////////
     // Remove declarations and connections to unused symbols
     ////////////////////////////////////////////////////////////////////////////
 
-    case entity: Entity => {
+    case desc: DescEntity =>
       // If we are removing a _q, drop the suffix from the _d
       for {
         qSymbol <- ourUnused
         dSymbol <- qSymbol.attr.flop.get
       } {
         assert(dSymbol.name endsWith "_d")
-        dSymbol rename dSymbol.name.dropRight(2)
+        dSymbol.name = dSymbol.name.dropRight(2)
         dSymbol.attr.combSignal set true
       }
 
       // Remove:
       // - declarations of unused symbols
-      // - unused instances
       // - connects driving only unused symbols
-      val newBody = entity.body filterNot {
-        case EntDecl(Decl(symbol, _))             => ourUnused contains symbol
-        case EntInstance(Sym(symbol, _), _, _, _) => unusedSymbols contains symbol
+      val newBody = desc.body filterNot {
+        case EntDecl(decl) => ourUnused contains decl.symbol
         case EntConnect(_, List(InstancePortRef(iSymbol, pSymbol))) =>
           unusedSymbols.contains(iSymbol) || unusedSymbols.contains(pSymbol)
         case EntConnect(_, List(rhs)) => WrittenSymbols(rhs) forall ourUnused.contains
         case _                        => false
       }
 
-      TypeAssigner(entity.copy(body = newBody) withLoc tree.loc)
-    }
+      TypeAssigner(desc.copy(body = newBody) withLoc tree.loc)
 
     case _ => tree
   }
@@ -114,11 +108,11 @@ final class RemoveUnused(unusedSymbols: Set[Symbol])(implicit cc: CompilerContex
 object RemoveUnused extends Pass {
   val name = "remove-unused"
 
-  private def gather(entities: List[Entity])(f: Entity => Iterator[Symbol]): Set[Symbol] =
-    HashSet from { entities.par flatMap f }
+  private def gather(entities: List[Decl])(f: Decl => Iterator[Symbol]): Set[Symbol] =
+    HashSet from { entities flatMap f }
 
   @tailrec
-  private def loop(entities: List[Entity])(implicit cc: CompilerContext): List[Entity] = {
+  private def loop(entities: List[Decl])(implicit cc: CompilerContext): List[Decl] = {
 
     // TODO: Could prune every entity completely that has only inputs left
 
@@ -127,20 +121,23 @@ object RemoveUnused extends Pass {
     // Gather all symbols considered for removal
     val candidateSymbols = gather(entities) { entity =>
       val eSymbol = entity.symbol
+      val desc = entity.desc.asInstanceOf[DescEntity]
 
       val isTopLevel = eSymbol.attr.topLevel.get contains true
-      val isVerbatim = eSymbol.attr.variant.value == "verbatim"
 
       val eSymbols = if (isTopLevel) Iterator.empty else Iterator.single(eSymbol)
 
-      val dSymbols = if (isVerbatim) {
+      val dSymbols = if (desc.variant == EntityVariant.Ver) {
         // Retain all definitions for verbatim entities
         Iterator.empty
       } else {
         val stateVarQ = eSymbol.attr.stateVar.get
         val stateVarD = stateVarQ map { _.attr.flop.value }
-        entity.declarations.iterator collect {
-          case Decl(symbol, _) => symbol
+        desc.decls.iterator filter {
+          case Decl(_, _: DescInstance) => false
+          case _                        => true
+        } map {
+          _.symbol
         } filterNot { symbol =>
           // Retain the state variables if they exist
           (stateVarQ contains symbol) || (stateVarD contains symbol)
@@ -153,10 +150,9 @@ object RemoveUnused extends Pass {
         }
       }
 
-      val iSymbols = entity.instances.iterator collect {
-        case EntInstance(Sym(iSymbol, _), _, _, _) => iSymbol
-      }
+      val iSymbols = desc.instances.iterator map { _.symbol }
 
+      // TODO: simplify by unifying dSymbols and iSymbols
       eSymbols ++ dSymbols ++ iSymbols
     }
 
@@ -168,7 +164,7 @@ object RemoveUnused extends Pass {
     // required as placeholders
     val usedSymbols = gather(entities) {
       _ flatCollect {
-        case EntInstance(_, Sym(eSymbol, _), _, _) => Iterator.single(eSymbol)
+        case Decl(_, DescInstance(ExprSym(eSymbol))) => Iterator.single(eSymbol)
         case EntConnect(lhs, List(rhs: ExprCat)) => {
           // Concatenation on the right, everything is used, if only as a placeholder
           // TODO: if any symbol in the concatenation is used, then all are used
@@ -200,11 +196,11 @@ object RemoveUnused extends Pass {
           // Everything on the right, but on the left only stuff that is read
           ReadSymbols.lval(lhs) ++ ReadSymbols.rval(rhs)
         }
-        case Decl(symbol, _) if symbol.attr.flop.isSet => {
+        case Decl(Sym(symbol, _), _) if symbol.attr.flop.isSet => {
           // Flop _d
           symbol.attr.flop.get.iterator
         }
-        case Decl(symbol, _) if symbol.attr.memory.isSet => {
+        case Decl(Sym(symbol, _), _) if symbol.attr.memory.isSet => {
           // Array _we/_waddr/_wdata
           val (we, waddr, wdata) = symbol.attr.memory.value
           Iterator(we, waddr, wdata)
@@ -223,29 +219,13 @@ object RemoveUnused extends Pass {
       entities
     } else {
       // Remove unused entities
-      val usedEntities = entities filterNot {
-        case Entity(Sym(symbol: TypeSymbol, _), _) => unusedSymbols contains symbol
-        case _                                     => unreachable
-      }
+      val usedEntities = entities filterNot { unusedSymbols contains _.symbol }
 
       // Remove symbols
       val results = List from {
-        usedEntities.par map { entity =>
-          (new RemoveUnused(unusedSymbols)(cc))(entity).asInstanceOf[Entity]
+        usedEntities map { entity =>
+          (new RemoveUnused(unusedSymbols)(cc))(entity).asInstanceOf[Decl]
         }
-      }
-
-      // Update type of the entities for removed ports
-      results foreach { entity =>
-        val portSymbols = entity.declarations collect {
-          case Decl(symbol, _) if symbol.kind.isInstanceOf[TypeIn]  => symbol
-          case Decl(symbol, _) if symbol.kind.isInstanceOf[TypeOut] => symbol
-        }
-        val newKind = entity.symbol.kind match {
-          case kind: TypeEntity => kind.copy(portSymbols = portSymbols)
-          case _                => unreachable
-        }
-        entity.symbol.kind = newKind
       }
 
       // Iterate until we no longer have any unused ports
@@ -255,8 +235,8 @@ object RemoveUnused extends Pass {
 
   def apply(trees: List[Tree])(implicit cc: CompilerContext): List[Tree] = {
     val entities = trees map {
-      case entity: Entity => entity
-      case _              => unreachable
+      case entity @ Decl(_, _: DescEntity) => entity
+      case _                               => unreachable
     }
     loop(entities)
   }

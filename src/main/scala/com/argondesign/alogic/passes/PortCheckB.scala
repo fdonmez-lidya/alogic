@@ -20,8 +20,8 @@ import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.Loc
 import com.argondesign.alogic.util.unreachable
-import scala.annotation.tailrec
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 
 final class PortCheckB(implicit cc: CompilerContext) extends TreeTransformer {
@@ -33,15 +33,17 @@ final class PortCheckB(implicit cc: CompilerContext) extends TreeTransformer {
   }
 
   override def skip(tree: Tree): Boolean = tree match {
-    case _: Root   => false
-    case _: Entity => false
-    case _         => true
+    case _: Root       => false
+    case _: RizDecl    => false
+    case _: Decl       => false
+    case _: DescEntity => false
+    case _: EntDecl    => false
+    case _             => true
   }
 
   override def enter(tree: Tree): Unit = tree match {
 
-    case entity: Entity => {
-
+    case Decl(_, desc: DescEntity) => {
       //////////////////////////////////////////////////////////////////////////
       // Check multiple drivers
       //////////////////////////////////////////////////////////////////////////
@@ -76,7 +78,7 @@ final class PortCheckB(implicit cc: CompilerContext) extends TreeTransformer {
 
       object IndexRangeAll {
         def apply(): IndexRange = new IndexRange(None)
-        def unapply(arg: IndexRange): Boolean = arg.underlying == None
+        def unapply(arg: IndexRange): Boolean = arg.underlying.isEmpty
       }
       object IndexRangeIndex {
         def apply(index: BigInt): IndexRange = new IndexRange(Some((index, index)))
@@ -102,9 +104,9 @@ final class PortCheckB(implicit cc: CompilerContext) extends TreeTransformer {
 
       // First populate sinks from all connects in this entity
       for {
-        EntConnect(_, rhss) <- entity.connects
+        EntConnect(_, rhss) <- desc.connects
         rhs <- rhss
-        if !rhs.tpe.isInstance
+        if !rhs.tpe.isEntity
       } {
 
         def collectSinks(expr: Expr): Unit = expr match {

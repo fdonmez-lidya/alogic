@@ -21,62 +21,29 @@ import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
 import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeNone
 import com.argondesign.alogic.core.StorageTypes.StorageTypeSlices
-import com.argondesign.alogic.core.Types._
 import com.argondesign.alogic.typer.TypeAssigner
-import com.argondesign.alogic.util.unreachable
 
 final class LowerFlowControlC(implicit cc: CompilerContext) extends TreeTransformer {
 
   override def skip(tree: Tree): Boolean = tree match {
-    case _: Entity => false
-    case _         => true
+    case _: Expr => true
+    case _       => false
   }
 
   override def transform(tree: Tree): Tree = tree match {
-    //////////////////////////////////////////////////////////////////////////
-    // Entity
-    //////////////////////////////////////////////////////////////////////////
+    // Drop original port declarations
+    case EntDecl(Decl(Sym(symbol, _), _)) if symbol.attr.expandedPort.isSet =>
+      TypeAssigner(Thicket(Nil) withLoc tree.loc)
 
-    case entity: Entity => {
-      // Drop original port declarations
-      val newBody = entity.body filterNot {
-        case EntDecl(Decl(symbol, _)) => symbol.attr.expandedPort.isSet
-        case _                        => false
-      }
-
-      // Update type of entity to drop old ports.
-      val portSymbols = newBody collect {
-        case EntDecl(Decl(symbol, _)) if symbol.kind.isIn  => symbol
-        case EntDecl(Decl(symbol, _)) if symbol.kind.isOut => symbol
-      }
-
-      val newKind = entitySymbol.kind match {
-        case kind: TypeEntity => kind.copy(portSymbols = portSymbols)
-        case _                => unreachable
-      }
-      entitySymbol.kind = newKind
-
-      TypeAssigner(entity.copy(body = newBody) withLoc tree.loc)
-    }
-
-    case _ => unreachable
+    case _ => tree
   }
 
   override def finalCheck(tree: Tree): Unit = {
-
-    def check(node: Tree, kind: Type) = {
-      kind visit {
-        case TypeOut(_, fc, _) if fc != FlowControlTypeNone => {
-          cc.ice(node, "Port with flow control remains")
-        }
-        case TypeOut(_, _, _: StorageTypeSlices) => {
-          cc.ice(node, "Port with output slices remains")
-        }
-      }
-    }
-
     tree visit {
-      case node @ Decl(symbol, _) => check(node, symbol.kind)
+      case node @ DescOut(_, fc, _, _) if fc != FlowControlTypeNone =>
+        cc.ice(node, "Port with flow control remains")
+      case node @ DescOut(_, _, _: StorageTypeSlices, _) =>
+        cc.ice(node, "Port with output slices remains")
     }
   }
 

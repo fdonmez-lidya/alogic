@@ -28,22 +28,17 @@ import org.scalatest.FreeSpec
 final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
 
   implicit val cc = new CompilerContext
-  cc.postSpecialization = true
 
   val namer = new Namer
   val typer = new Typer
 
   def xform(tree: Tree) = {
     tree match {
-      case Root(_, entity: Entity) => cc.addGlobalEntity(entity)
-      case entity: Entity          => cc.addGlobalEntity(entity)
-      case _                       =>
+      case root: Root => cc.addGlobalDecls(root.decls)
+      case decl: Decl => cc.addGlobalDecl(decl)
+      case _          =>
     }
-    val node = tree rewrite namer match {
-      case Root(_, entity) => entity
-      case other           => other
-    }
-    node rewrite typer
+    tree rewrite namer rewrite typer
   }
 
   def checkError(tree: Tree, err: String) = {
@@ -64,7 +59,7 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
           ("{ $display(); fence; }", ""),
           ("{ $display(); fence; $display(); fence; }", ""),
           ("{ fence; $display();}",
-           "Block must contain only combinatorial statements, or end with a control statement")
+           "Block must contain only combinational statements, or end with a control statement")
         )
       } {
         stmt in {
@@ -138,7 +133,7 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
         func in {
           val tree = s"""|fsm a {
                          | ${func}
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (msg.isEmpty) {
             cc.messages shouldBe empty
@@ -154,13 +149,13 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
         (fb, msg) <- List(
           ("fence { $display(); }", ""),
           ("fence { $display(); fence; }",
-           "'fence' block must contain only combinatorial statements")
+           "'fence' block must contain only combinational statements")
         )
       } {
         fb in {
           val tree = s"""|fsm a {
                          | ${fb}
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (msg.isEmpty) {
             cc.messages shouldBe empty
@@ -186,7 +181,46 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
           val tree =
             s"""|fsm f {
                 |  (* unused *) ${decl};
-                |}""".stripMargin.asTree[Entity]
+                |}""".stripMargin.asTree[Decl]
+          xform(tree)
+          if (msg.isEmpty) {
+            cc.messages shouldBe empty
+          } else {
+            cc.messages.loneElement should beThe[Error](msg)
+          }
+        }
+      }
+    }
+
+    "declaration types" - {
+      for {
+        (decl, msg) <- List(
+          ("i8 a", ""),
+          ("x a", "Expression does not name a type"),
+          ("in i8 a", ""),
+          ("in x a", "Expression does not name a type"),
+          ("out i8 a", ""),
+          ("out x a", "Expression does not name a type"),
+          ("param i8 a", ""),
+          ("param x a", "Expression does not name a type"),
+          ("const i8 a = 0", ""),
+          ("const x a = 0", "Expression does not name a type"),
+          ("pipeline i8 a", ""),
+          ("pipeline x a", "Expression does not name a type"),
+          ("sram i8 a[1]", ""),
+          ("sram x a[1]", "Expression does not name a type"),
+          ("i8 a[1]", ""),
+          ("x a[1]", "Expression does not name a type"),
+          ("i8[1] a", ""),
+          ("x[1] a", "Expression does not name a type")
+        )
+      } {
+        decl in {
+          val tree =
+            s"""|fsm f {
+                |  (* unused *) u2 x; 
+                |  (* unused *) ${decl};
+                |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (msg.isEmpty) {
             cc.messages shouldBe empty
@@ -218,7 +252,7 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
                          |    ${assignment};
                          |    fence;
                          |  }
-                         |}""".stripMargin.asTree[Entity]
+                         |}""".stripMargin.asTree[Decl]
           xform(tree)
           if (msg.isEmpty) {
             cc.messages shouldBe empty
@@ -244,7 +278,7 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
                            |    ${assignment};
                            |    fence;
                            |  }
-                           |}""".stripMargin.asTree[Entity]
+                           |}""".stripMargin.asTree[Decl]
             xform(tree)
             if (msg.isEmpty) {
               cc.messages shouldBe empty
@@ -260,7 +294,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
       val iPortMsg = "Input port cannot be modified"
       val oPortMsg =
         Pattern.quote("Output port with flow control can only be modified using .write()")
-      val paramMsg = "Parameter cannot be modified"
       val constMsg = "Constant cannot be modified"
       val memoryMsg = Pattern.quote("Memory can only be modified using .write()")
 
@@ -273,7 +306,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"d ${op} 8'd0", oPortMsg),
             (s"e ${op} 8'd0", iPortMsg),
             (s"f ${op} 8'd0", oPortMsg),
-            (s"g ${op} 8'd0", paramMsg),
             (s"h ${op} 8'd0", constMsg),
             (s"a[0] ${op} 1'b0", iPortMsg),
             (s"b[0] ${op} 1'b0", ""),
@@ -281,7 +313,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"d[0] ${op} 1'b0", oPortMsg),
             (s"e[0] ${op} 1'b0", iPortMsg),
             (s"f[0] ${op} 1'b0", oPortMsg),
-            (s"g[0] ${op} 1'b0", paramMsg),
             (s"h[0] ${op} 1'b0", constMsg),
             (s"i[0] ${op} 4'b0", memoryMsg),
             (s"a[1:0] ${op} 2'b0", iPortMsg),
@@ -290,7 +321,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"d[1:0] ${op} 2'b0", oPortMsg),
             (s"e[1:0] ${op} 2'b0", iPortMsg),
             (s"f[1:0] ${op} 2'b0", oPortMsg),
-            (s"g[1:0] ${op} 2'b0", paramMsg),
             (s"h[1:0] ${op} 2'b0", constMsg),
             (s"i[0][1:0] ${op} 2'b0", memoryMsg),
             (s"{b[1], a[0]} ${op} 2'b0", iPortMsg),
@@ -299,7 +329,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"{b[1], d[0]} ${op} 2'b0", oPortMsg),
             (s"{b[1], e[0]} ${op} 2'b0", iPortMsg),
             (s"{b[1], f[0]} ${op} 2'b0", oPortMsg),
-            (s"{b[1], g[0]} ${op} 2'b0", paramMsg),
             (s"{b[1], h[0]} ${op} 2'b0", constMsg),
             (s"{b[1], i[0]} ${op} 9'b0", memoryMsg)
           )
@@ -312,7 +341,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
                            |  (* unused *) out sync i8 d;
                            |  (* unused *) in sync ready i8 e;
                            |  (* unused *) out sync ready i8 f;
-                           |  (* unused *) param i8 g = 8'd2;
                            |  (* unused *) const i8 h = 8'd2;
                            |  (* unused *) u8 i[4];
                            |
@@ -320,7 +348,7 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
                            |    ${assignment};
                            |    fence;
                            |  }
-                           |}""".stripMargin.asTree[Entity]
+                           |}""".stripMargin.asTree[Decl]
             xform(tree)
             if (msg.isEmpty) {
               cc.messages shouldBe empty
@@ -337,7 +365,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
       val iPortMsg = "Input port cannot be modified"
       val oPortMsg =
         Pattern.quote("Output port with flow control can only be modified using .write()")
-      val paramMsg = "Parameter cannot be modified"
       val constMsg = "Constant cannot be modified"
       val memoryMsg = Pattern.quote("Memory can only be modified using .write()")
 
@@ -350,7 +377,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"d${op}", oPortMsg),
             (s"e${op}", iPortMsg),
             (s"f${op}", oPortMsg),
-            (s"g${op}", paramMsg),
             (s"h${op}", constMsg),
             (s"a[0]${op}", iPortMsg),
             (s"b[0]${op}", ""),
@@ -358,7 +384,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"d[0]${op}", oPortMsg),
             (s"e[0]${op}", iPortMsg),
             (s"f[0]${op}", oPortMsg),
-            (s"g[0]${op}", paramMsg),
             (s"h[0]${op}", constMsg),
             (s"i[0]${op}", memoryMsg),
             (s"a[1:0]${op}", iPortMsg),
@@ -367,7 +392,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"d[1:0]${op}", oPortMsg),
             (s"e[1:0]${op}", iPortMsg),
             (s"f[1:0]${op}", oPortMsg),
-            (s"g[1:0]${op}", paramMsg),
             (s"h[1:0]${op}", constMsg),
             (s"i[0][1:0]${op}", memoryMsg),
             (s"{b[1], a[0]}${op}", iPortMsg),
@@ -376,7 +400,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
             (s"{b[1], d[0]}${op}", oPortMsg),
             (s"{b[1], e[0]}${op}", iPortMsg),
             (s"{b[1], f[0]}${op}", oPortMsg),
-            (s"{b[1], g[0]}${op}", paramMsg),
             (s"{b[1], h[0]}${op}", constMsg),
             (s"{b[1], i[0]}${op}", memoryMsg)
           )
@@ -389,7 +412,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
                            |  (* unused *) out sync i8 d;
                            |  (* unused *) in sync ready i8 e;
                            |  (* unused *) out sync ready i8 f;
-                           |  (* unused *) param i8 g = 8'd2;
                            |  (* unused *) const i8 h = 8'd2;
                            |  (* unused *) u8 i[4];
                            |
@@ -397,7 +419,7 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
                            |    ${assignment};
                            |    fence;
                            |  }
-                           |}""".stripMargin.asTree[Entity]
+                           |}""".stripMargin.asTree[Decl]
             xform(tree)
             if (msg.isEmpty) {
               cc.messages shouldBe empty
@@ -405,25 +427,6 @@ final class TyperCheckStmtSpec extends FreeSpec with AlogicTest {
               cc.messages.loneElement should beThe[Error](msg)
             }
           }
-        }
-      }
-    }
-
-    "error for signals with non-positive width" - {
-      for {
-        (decl, width) <- List(
-          ("uint(-1s) a", -1),
-          ("uint(-1s) a = 0", -1),
-          ("uint(0) a", 0),
-          ("uint(0) a = 0", 0)
-        )
-      } {
-        decl in {
-          val tree = s"""|fsm tmp {
-                         |  (* unused *) ${decl};
-                         |}""".stripMargin.asTree[Entity]
-          xform(tree)
-          cc.messages.loneElement should beThe[Error](s"'a' is declared with width ${width}")
         }
       }
     }

@@ -18,15 +18,13 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
-import com.argondesign.alogic.core.Types._
-import com.argondesign.alogic.lib.TreeLike
 import com.argondesign.alogic.typer.TypeAssigner
 
 final class ResolvePolyFunc(implicit cc: CompilerContext) extends TreeTransformer {
 
   override def transform(tree: Tree): Tree = tree match {
     case ExprCall(expr, args) if expr.tpe.isPolyFunc => {
-      val symbol = expr.tpe.asInstanceOf[TypePolyFunc].resolve(args).get
+      val symbol = expr.tpe.asPolyFunc.resolve(args).get
       val ref = TypeAssigner(ExprSym(symbol) withLoc expr.loc)
       TypeAssigner(ExprCall(ref, args) withLoc tree.loc)
     }
@@ -34,12 +32,9 @@ final class ResolvePolyFunc(implicit cc: CompilerContext) extends TreeTransforme
     case _ => tree
   }
 
-  override def finalCheck(tree: Tree): Unit = {
-    def check(tree: TreeLike) = tree visitAll {
-      case node: Tree if node.tpe.isInstanceOf[TypePolyFunc] =>
-        cc.ice(node, s"ResolvePolyFunc: node of type TypePolyFunc remains")
-    }
-    check(tree)
+  override def finalCheck(tree: Tree): Unit = tree visitAll {
+    case node: Tree if node.tpe.isPolyFunc =>
+      cc.ice(node, s"ResolvePolyFunc: node of type TypePolyFunc remains")
   }
 
 }

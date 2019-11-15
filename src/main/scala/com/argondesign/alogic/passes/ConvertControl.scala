@@ -20,7 +20,7 @@ package com.argondesign.alogic.passes
 import com.argondesign.alogic.ast.TreeTransformer
 import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.CompilerContext
-import com.argondesign.alogic.core.Symbols.TermSymbol
+import com.argondesign.alogic.core.Symbols.Symbol
 import com.argondesign.alogic.core.Types._
 import com.argondesign.alogic.typer.TypeAssigner
 import com.argondesign.alogic.util.unreachable
@@ -32,7 +32,7 @@ import scala.collection.mutable.ListBuffer
 final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer {
 
   // The return stack symbol
-  private[this] lazy val rsSymbol: TermSymbol = {
+  private[this] lazy val rsSymbol: Symbol = {
     entitySymbol.attr.returnStack.get getOrElse {
       cc.ice(entitySymbol, "Entity requires a return stack, but none was allocated")
     }
@@ -43,32 +43,33 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
   //////////////////////////////////////////////////////////////////////////
 
   // Map from function symbols to the entry state symbol of that function
-  private[this] var func2state: Map[TermSymbol, TermSymbol] = _
+  private[this] var func2state: Map[Symbol, Symbol] = _
 
   // Map from stmt.id to state symbol that is allocated after this statement
-  private[this] val allocStmts = mutable.Map[Int, TermSymbol]()
+  private[this] val allocStmts = mutable.Map[Int, Symbol]()
 
   // Map from stmt.id to state symbol if this is the first stmt in that statement
-  private[this] val entryStmts = mutable.Map[Int, TermSymbol]()
+  private[this] val entryStmts = mutable.Map[Int, Symbol]()
 
   // Stack of state symbols to go to when finished with this state
-  private[this] val followingState = mutable.Stack[TermSymbol]()
+  private[this] val followingState = mutable.Stack[Symbol]()
 
   // Stack of break statement target state symbols
-  private[this] val breakTargets = mutable.Stack[TermSymbol]()
+  private[this] val breakTargets = mutable.Stack[Symbol]()
 
   // Stack of continue statement target state symbols
-  private[this] val continueTargets = mutable.Stack[TermSymbol]()
+  private[this] val continueTargets = mutable.Stack[Symbol]()
 
   // Stack of states symbols in the order they are emitted. We keep these
   // as Options. A None indicates that the state does not actually needs
   // to be emitted, as it will be emitted by an enclosing list (which is empty),
   // in part, this is used to avoid emitting empty states for loop entry points.
-  private[this] val pendingStates = mutable.Stack[Option[TermSymbol]]()
+  private[this] val pendingStates = mutable.Stack[Option[Symbol]]()
 
   override def skip(tree: Tree): Boolean = tree match {
-    case entity: Entity => entity.functions.isEmpty
-    case _              => false
+    case Decl(_, desc: DescEntity) => desc.functions.isEmpty
+    case Decl(_, _: DescRecord)    => true
+    case _                         => false
   }
 
   // Allocate all intermediate states that are introduced
@@ -85,7 +86,7 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
       if stmt.tpe == TypeCtrlStmt
     } yield {
       // Allocate a new state for the following statement
-      val symbol = cc.newTermSymbol(s"l${next.loc.line}", next.loc, TypeState)
+      val symbol = cc.newSymbol(s"l${next.loc.line}", next.loc) tap { _.kind = TypeState }
       allocStmts(stmt.id) = symbol
       entryStmts(next.id) = symbol
       symbol
@@ -117,28 +118,21 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
       // Entity
       //////////////////////////////////////////////////////////////////////////
 
-      case entity: Entity => {
+      case entity: DescEntity =>
         // Allocate function entry state symbols up front so they can be
         // resolved in an arbitrary order, also add them to the entryStmts map
-        val pairs = for (function <- entity.functions) yield {
-          function.ref match {
-            case Sym(functionSymbol: TermSymbol, _) =>
-              val stateSymbol = cc.newTermSymbol(
-                s"l${functionSymbol.loc.line}_function_${functionSymbol.name}",
-                functionSymbol.loc,
-                TypeState
-              )
-              stateSymbol.attr.update(functionSymbol.attr)
-              stateSymbol.attr.recLimit.clear()
-              entryStmts(function.stmts.head.id) = stateSymbol
-              functionSymbol -> stateSymbol
-            case _ => unreachable
+        func2state = Map from {
+          for (Decl(ref, desc: DescFunc) <- entity.functions.iterator) yield {
+            val functionSymbol = ref.symbol
+            val name = s"l${functionSymbol.loc.line}_function_${functionSymbol.name}"
+            val stateSymbol = cc.newSymbol(name, functionSymbol.loc)
+            stateSymbol.kind = TypeState
+            stateSymbol.attr.update(functionSymbol.attr)
+            stateSymbol.attr.recLimit.clear()
+            entryStmts(desc.body.head.id) = stateSymbol
+            functionSymbol -> stateSymbol
           }
         }
-
-        // Construct the map from function symbols to entry state symbols
-        func2state = Map(pairs: _*)
-      }
 
       //////////////////////////////////////////////////////////////////////////
       // Allocate states where any List[Stmt] is involved
@@ -175,7 +169,9 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
             symbol
           }
           case None => {
-            val symbol = cc.newTermSymbol(s"l${tree.loc.line}_loop", tree.loc, TypeState)
+            val symbol = cc.newSymbol(s"l${tree.loc.line}_loop", tree.loc) tap {
+              _.kind = TypeState
+            }
             entryStmts(tree.id) = symbol
             // Need to emit newly created state
             pendingStates.push(Some(symbol))
@@ -193,8 +189,8 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
         allocateStates(body)
       }
 
-      case EntFunction(Sym(symbol: TermSymbol, _), body) => {
-        val stateSymbol = func2state(symbol)
+      case Decl(ref, DescFunc(_, _, _, body)) =>
+        val stateSymbol = func2state(ref.symbol)
 
         // Set up the followingState to loop back to the function entry point
         followingState.push(stateSymbol)
@@ -204,7 +200,6 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
 
         // Ensure the function entry state is emitted
         pendingStates.push(Some(stateSymbol))
-      }
 
       //////////////////////////////////////////////////////////////////////////
       // Otherwise nothing interesting
@@ -251,21 +246,19 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
     }
 
   // List of emitted states
-  private[this] val emittedStates = ListBuffer[EntState]()
+  private[this] val emittedStates = ListBuffer[EntDecl]()
 
   // Emit current state with given body, returns symbol that was emitted
-  private[this] def emitState(body: List[Stmt]): Option[TermSymbol] = {
+  private[this] def emitState(body: List[Stmt]): Option[Symbol] = {
     assert(body.last.tpe == TypeCtrlStmt)
     assert(body.init forall { _.tpe == TypeCombStmt })
 
     val symOpt = pendingStates.pop()
 
     symOpt foreach { symbol =>
-      val loc = body.head.loc
-      val ref = ExprSym(symbol) regularize loc
-      val state = EntState(ref, body) withLoc loc
-      TypeAssigner(state)
-      emittedStates append state
+      emittedStates append {
+        EntDecl(Decl(Sym(symbol, Nil), DescState(ExprSym(symbol), body))) regularize body.head.loc
+      }
     }
 
     symOpt
@@ -298,7 +291,7 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
         StmtGoto(ref) regularize tree.loc
       }
 
-      case StmtGoto(ExprSym(symbol: TermSymbol)) => {
+      case StmtGoto(ExprSym(symbol)) => {
         val ref = ExprSym(func2state(symbol))
         StmtGoto(ref) regularize tree.loc
       }
@@ -308,9 +301,9 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
         StmtGoto(pop) regularize tree.loc
       }
 
-      case StmtExpr(ExprCall(ExprSym(symbol: TermSymbol), Nil)) => {
+      case StmtExpr(ExprCall(ExprSym(symbol), Nil)) => {
         val ret = ExprSym(followingState.top)
-        val push = ExprSym(rsSymbol) select "push" call List(ret)
+        val push = ExprSym(rsSymbol) select "push" call List(ArgP(ret))
         val ref = ExprSym(func2state(symbol))
         StmtBlock(List(StmtExpr(push), StmtGoto(ref))) regularize tree.loc
       }
@@ -392,7 +385,7 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
       // Handle function
       //////////////////////////////////////////////////////////////////////////
 
-      case EntFunction(_, body) => {
+      case Decl(_, DescFunc(_, _, _, body)) => {
         splitControlUnits(body) foreach emitState
         // Don't bother rewriting, it will be discarded later
         tree
@@ -404,19 +397,19 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
       // Convert entity
       //////////////////////////////////////////////////////////////////////////
 
-      case entity: Entity => {
+      case desc: DescEntity => {
         val newBody = List from {
           // Drop functions
-          entity.body.iterator filter {
-            case _: EntFunction => false
-            case _              => true
+          desc.body.iterator filter {
+            case EntDecl(Decl(_, _: DescFunc)) => false
+            case _                             => true
           } concat {
             // Add states, sorted by source location (for ease of debugging)
             emittedStates.toList sortBy { _.loc.start }
           }
         }
 
-        TypeAssigner(entity.copy(body = newBody) withLoc entity.loc)
+        TypeAssigner(desc.copy(body = newBody) withLoc desc.loc)
       }
 
       //////////////////////////////////////////////////////////////////////////
@@ -450,7 +443,7 @@ final class ConvertControl(implicit cc: CompilerContext) extends TreeTransformer
 
     tree visit {
       case node: Tree if !node.hasTpe => cc.ice(node, "Lost tpe of", node.toString)
-      case node: EntFunction          => cc.ice(node, "Function remains")
+      case node: DescFunc             => cc.ice(node, "Function remains")
       case node: StmtLoop             => cc.ice(node, "Loop remains")
       case node: StmtFence            => cc.ice(node, "Fence statement remains")
       case node: StmtBreak            => cc.ice(node, "Break statement remains")

@@ -19,10 +19,12 @@ import com.argondesign.alogic.ast.Trees._
 import com.argondesign.alogic.core.FlowControlTypes.FlowControlTypeNone
 import com.argondesign.alogic.core.StorageTypes._
 import com.argondesign.alogic.core.Types._
+import com.argondesign.alogic.core.enums.EntityVariant
 import com.argondesign.alogic.lib.Math
-import com.argondesign.alogic.typer.TypeAssigner
 
-object SramFactory {
+import scala.util.ChainingSyntax
+
+object SramFactory extends ChainingSyntax {
 
   /*
     fsm sram {
@@ -56,22 +58,28 @@ object SramFactory {
       depth: Int
   )(
       implicit cc: CompilerContext
-  ): Entity = {
+  ): Decl = {
 
     val fcn = FlowControlTypeNone
 
-    val bool = TypeUInt(TypeAssigner(Expr(1) withLoc loc))
+    val addrKind = TypeUInt(Math.clog2(depth))
+    val dataKind = TypeUInt(width)
 
-    val addrKind = TypeUInt(Expr(Math.clog2(depth)) regularize loc)
-    val dataKind = TypeUInt(Expr(width) regularize loc)
-    val storKind = TypeArray(dataKind, Expr(depth) regularize loc)
+    val ceSymbol = cc.newSymbol("ce", loc) tap { _.kind = TypeIn(TypeUInt(1), fcn) }
+    val weSymbol = cc.newSymbol("we", loc) tap { _.kind = TypeIn(TypeUInt(1), fcn) }
+    val adSymbol = cc.newSymbol("addr", loc) tap { _.kind = TypeIn(addrKind, fcn) }
+    val wdSymbol = cc.newSymbol("wdata", loc) tap { _.kind = TypeIn(dataKind, fcn) }
+    val rdSymbol = cc.newSymbol("rdata", loc) tap {
+      _.kind = TypeOut(dataKind, fcn, StorageTypeReg)
+    }
+    val stSymbol = cc.newSymbol("storage", loc) tap { _.kind = TypeArray(dataKind, depth) }
 
-    val ceSymbol = cc.newTermSymbol("ce", loc, TypeIn(bool, fcn))
-    val weSymbol = cc.newTermSymbol("we", loc, TypeIn(bool, fcn))
-    val adSymbol = cc.newTermSymbol("addr", loc, TypeIn(addrKind, fcn))
-    val wdSymbol = cc.newTermSymbol("wdata", loc, TypeIn(dataKind, fcn))
-    val rdSymbol = cc.newTermSymbol("rdata", loc, TypeOut(dataKind, fcn, StorageTypeReg))
-    val stSymbol = cc.newTermSymbol("storage", loc, storKind)
+    val ceDecl = ceSymbol.decl
+    val weDecl = weSymbol.decl
+    val adDecl = adSymbol.decl
+    val wdDecl = wdSymbol.decl
+    val rdDecl = rdSymbol.decl
+    val stDecl = stSymbol.decl
 
     val ceRef = ExprSym(ceSymbol)
     val weRef = ExprSym(weSymbol)
@@ -87,7 +95,7 @@ object SramFactory {
           StmtIf(
             weRef,
             List(
-              StmtExpr(ExprCall(stRef select "write", List(adRef, wdRef))),
+              StmtExpr(ExprCall(stRef select "write", List(ArgP(adRef), ArgP(wdRef)))),
               StmtAssign(rdRef, ExprInt(false, width, 0))
             ),
             List(
@@ -99,21 +107,14 @@ object SramFactory {
       )
     )
 
-    val ports = List(ceSymbol, weSymbol, adSymbol, wdSymbol, rdSymbol)
+    val decls = List(ceDecl, weDecl, adDecl, wdDecl, rdDecl, stDecl) map EntDecl
 
-    val symbols = stSymbol :: ports
-
-    val decls = symbols map { symbol =>
-      EntDecl(Decl(symbol, None))
-    }
-
-    val eKind = TypeEntity(name, ports, Nil)
-    val entitySymbol = cc.newTypeSymbol(name, loc, eKind)
-    entitySymbol.attr.variant set "fsm"
+    val desc = DescEntity(EntityVariant.Fsm, decls ::: EntCombProcess(statements) :: Nil)
+    val entitySymbol = cc.newSymbol(name, loc)
     entitySymbol.attr.sram set true
-    entitySymbol.attr.highLevelKind set eKind
-    val entity = Entity(Sym(entitySymbol, Nil), decls ::: EntCombProcess(statements) :: Nil)
-    entity regularize loc
+    Decl(Sym(entitySymbol, Nil), desc) regularize loc tap { _ =>
+      entitySymbol.attr.highLevelKind set entitySymbol.kind.asType.kind.asEntity
+    }
   }
 
 }
